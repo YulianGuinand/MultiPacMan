@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import sys
 
 import pyxel
 
@@ -51,13 +50,26 @@ class App:
         self.state = GameState()
         self.network = NetworkManager(self.state, server_url)
         self.renderer = Renderer(self.state)
-        self.input_handler = InputHandler(self.network.send)
+        self.input_handler = InputHandler(self.state, self.network.send)
         self._frame: int = 0  # tracks frames for send-rate control
 
         # Start WebSocket thread before Pyxel (Pyxel blocks on run()).
         self.network.start(room_id)
 
         pyxel.init(SCREEN_W, SCREEN_H, title="MultiPacMan", fps=_FPS)
+
+        # Load resources and play music 1 in a loop
+        import os
+        try:
+            res_path = os.path.join(os.path.dirname(__file__), "my_resource.pyxres")
+            if os.path.exists(res_path):
+                pyxel.load(res_path)
+                pyxel.playm(1, loop=True)
+            else:
+                logging.warning(f"Resource file not found at: {res_path}")
+        except Exception as e:
+            logging.error(f"Failed to load my_resource.pyxres or play music: {e}")
+
         pyxel.run(self.update, self.draw)
 
     # -----------------------------------------------------------------------
@@ -66,7 +78,7 @@ class App:
 
     def update(self) -> None:
         # Global quit.
-        if pyxel.btnp(pyxel.KEY_Q) or pyxel.btnp(pyxel.KEY_ESCAPE):
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
             self.network.stop()
             pyxel.quit()
             return

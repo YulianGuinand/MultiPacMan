@@ -83,12 +83,15 @@ class Renderer:
 
         if not snap["connected"]:
             self._draw_connecting(snap)
+            pyxel.mouse(False)
         elif snap["room_state"] == "LOBBY":
             self._draw_lobby(snap)
+            pyxel.mouse(False)
         elif snap["room_state"] == "PLAYING":
             self._draw_game(snap)
         elif snap["room_state"] == "FINISHED":
             self._draw_game_over(snap)
+            pyxel.mouse(False)
 
         # Error overlay (always on top).
         if snap["last_error"]:
@@ -191,6 +194,12 @@ class Renderer:
             elif role == "GHOST_TRACKER":
                 self._draw_direction_indicator(sx, sy, status.tracker_dir_angle, C_TRACKER_IND)
 
+        # Draw builder preview if playing, alive, and GHOST_BUILDER
+        if role == "GHOST_BUILDER" and not status.is_dead:
+            self._draw_builder_preview(snap)
+        else:
+            pyxel.mouse(False)
+
         self._draw_hud(status, snap)
 
         # Death overlay (on top of everything)
@@ -204,6 +213,77 @@ class Renderer:
         # 20% per frame → reaches target in ~5 frames, feels responsive yet smooth
         self._cam_x += (target_x - self._cam_x) * 0.20
         self._cam_y += (target_y - self._cam_y) * 0.20
+        self.state.camera_x = self._cam_x
+        self.state.camera_y = self._cam_y
+
+    def _draw_builder_preview(self, snap: dict) -> None:
+        status = snap["status"]
+        if status.is_dead or status.stunned:
+            pyxel.mouse(False)
+            return
+
+        pyxel.mouse(True)
+        builder_step = snap.get("builder_step", 0)
+
+        # Get current mouse hover tile
+        grid_x = int((pyxel.mouse_x + self._cam_x) // TILE_SIZE)
+        grid_y = int((pyxel.mouse_y + self._cam_y) // TILE_SIZE)
+
+        # Bounds check
+        if 0 <= grid_x < snap["map_width"] and 0 <= grid_y < snap["map_height"]:
+            tile_type = snap["tile_cache"].get((grid_x, grid_y))
+            # Screen coords for hover tile
+            hsx = grid_x * TILE_SIZE - self._cam_x
+            hsy = grid_y * TILE_SIZE - self._cam_y
+
+            # Determine color based on availability and cooldown
+            if status.cooldown_ms > 0:
+                col = 5  # dark gray
+            else:
+                # If builder_step is 0, the first click must be Empty (0)
+                # If builder_step is 1, the second click can be Empty (0) or Wall (1)
+                is_valid = (tile_type == 0) if builder_step == 0 else (tile_type in (0, 1))
+                col = 11 if is_valid else 8
+
+            # Pulsing hover box outline
+            if (pyxel.frame_count // 5) % 2 == 0:
+                pyxel.rectb(round(hsx), round(hsy), TILE_SIZE, TILE_SIZE, col)
+
+        # If step == 1, draw the first clicked tile and the potential second tile
+        if builder_step == 1:
+            x1 = snap.get("builder_x1", -1)
+            y1 = snap.get("builder_y1", -1)
+            s1x = x1 * TILE_SIZE - self._cam_x
+            s1y = y1 * TILE_SIZE - self._cam_y
+
+            # Draw first block preview (blinking yellow/orange)
+            col1 = 10 if (pyxel.frame_count // 4) % 2 == 0 else 9
+            pyxel.rectb(round(s1x), round(s1y), TILE_SIZE, TILE_SIZE, col1)
+
+            # Draw connector/line to mouse cursor
+            mx = pyxel.mouse_x
+            my = pyxel.mouse_y
+            pyxel.line(round(s1x + 4), round(s1y + 4), mx, my, 13) # indigo connection line
+
+            # Calculate proposed second block
+            mg_x = int((pyxel.mouse_x + self._cam_x) // TILE_SIZE)
+            mg_y = int((pyxel.mouse_y + self._cam_y) // TILE_SIZE)
+            dx = mg_x - x1
+            dy = mg_y - y1
+            if dx != 0 or dy != 0:
+                if abs(dx) >= abs(dy):
+                    x2 = x1 + (1 if dx >= 0 else -1)
+                    y2 = y1
+                else:
+                    x2 = x1
+                    y2 = y1 + (1 if dy >= 0 else -1)
+
+                s2x = x2 * TILE_SIZE - self._cam_x
+                s2y = y2 * TILE_SIZE - self._cam_y
+                tile_type2 = snap["tile_cache"].get((x2, y2))
+                col2 = 11 if tile_type2 in (0, 1) else 8
+                # Draw second block preview
+                pyxel.rectb(round(s2x), round(s2y), TILE_SIZE, TILE_SIZE, col2)
 
     def _world_to_screen(self, wx: float, wy: float) -> tuple[int, int]:
         return (
@@ -397,26 +477,20 @@ class Renderer:
 
     def _draw_death_overlay(self, snap: dict) -> None:
         status = snap["status"]
-        # Semi-transparent dark band
-        mid_y = GAME_H // 2
-        pyxel.rect(0, mid_y - 24, SCREEN_W, 52, 0)
-        pyxel.line(0, mid_y - 24, SCREEN_W, mid_y - 24, C_DEAD_TEXT)
-        pyxel.line(0, mid_y + 28, SCREEN_W, mid_y + 28, C_DEAD_TEXT)
-
-        # "YOU ARE DEAD" — pulsing
-        if (pyxel.frame_count // 10) % 2 == 0:
-            self._ctext("YOU ARE DEAD", SCREEN_W // 2, mid_y - 16, C_DEAD_TEXT)
-        else:
-            self._ctext("YOU ARE DEAD", SCREEN_W // 2, mid_y - 16, 7)
-
-        # Spectating info
         spectating = status.spectating_id
-        if spectating:
-            self._ctext(f"Watching: {spectating[:12]}", SCREEN_W // 2, mid_y, C_HUD_TEXT)
-        else:
-            self._ctext("No teammates alive", SCREEN_W // 2, mid_y, C_HUD_DIM)
 
-        self._ctext("[SPACE] switch player", SCREEN_W // 2, mid_y + 14, C_HUD_DIM)
+        # Draw a discrete black banner at the top of the screen (9 pixels high)
+        pyxel.rect(0, 0, SCREEN_W, 9, 0)
+        # Red line at the bottom of the banner
+        pyxel.line(0, 9, SCREEN_W, 9, C_DEAD_TEXT)
+
+        if spectating:
+            text = f"DEAD - SPECTATING: {spectating[:12]} (SPACE to cycle)"
+        else:
+            text = "DEAD - No teammates alive"
+
+        # Center the text in the banner
+        self._ctext(text, SCREEN_W // 2, 2, C_DEAD_TEXT)
 
     # -----------------------------------------------------------------------
     # HUD
@@ -490,7 +564,7 @@ class Renderer:
             # Estimate max cooldown from role.
             max_cd = {
                 "GHOST_TRACKER":  60_000,
-                "GHOST_BUILDER":  20_000,
+                "GHOST_BUILDER":  30_000,
                 "GHOST_SPRINTER":  8_000,
             }.get(status.role, 10_000)
             filled = int(bar_w * (1.0 - status.cooldown_ms / max_cd))

@@ -10,11 +10,14 @@ from typing import Callable
 
 import pyxel
 
+from state import GameState, GameStatus
+
 
 class InputHandler:
     """Translates Pyxel key state into network messages."""
 
-    def __init__(self, send_fn: Callable[[dict], None]) -> None:
+    def __init__(self, state: GameState, send_fn: Callable[[dict], None]) -> None:
+        self.state = state
         self._send = send_fn
         self._seq: int = 0
         # Accumulated dash press: captured every frame (60fps) but only
@@ -67,16 +70,23 @@ class InputHandler:
                 self._send({"type": "SPECTATE_NEXT"})
             return 0.0, 0.0
 
+        # --- Builder mouse input handling ---
+        if status and status.role == "GHOST_BUILDER":
+            if status.stunned or status.cooldown_ms > 0:
+                self.state.builder_step = 0
+            else:
+                self._handle_builder_clicks(status)
+
         dir_x, dir_y = 0.0, 0.0
 
         # Horizontal
-        if pyxel.btn(pyxel.KEY_LEFT) or pyxel.btn(pyxel.KEY_A):
+        if pyxel.btn(pyxel.KEY_LEFT) or pyxel.btn(pyxel.KEY_A) or pyxel.btn(pyxel.KEY_Q):
             dir_x = -1.0
         elif pyxel.btn(pyxel.KEY_RIGHT) or pyxel.btn(pyxel.KEY_D):
             dir_x = 1.0
 
         # Vertical
-        if pyxel.btn(pyxel.KEY_UP) or pyxel.btn(pyxel.KEY_W):
+        if pyxel.btn(pyxel.KEY_UP) or pyxel.btn(pyxel.KEY_W) or pyxel.btn(pyxel.KEY_Z):
             dir_y = -1.0
         elif pyxel.btn(pyxel.KEY_DOWN) or pyxel.btn(pyxel.KEY_S):
             dir_y = 1.0
@@ -119,3 +129,56 @@ class InputHandler:
     def _handle_finished(self) -> None:
         # Placeholder: could reconnect or return to lobby.
         pass
+
+    def _handle_builder_clicks(self, status: GameStatus) -> None:
+        # Cancel build selection on right click
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT):
+            self.state.builder_step = 0
+            return
+
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
+            # Calculate world grid coordinates adjusted by the camera position
+            grid_x = int((pyxel.mouse_x + self.state.camera_x) // 8)
+            grid_y = int((pyxel.mouse_y + self.state.camera_y) // 8)
+
+            # Check map bounds
+            if grid_x < 0 or grid_x >= self.state.map_width or grid_y < 0 or grid_y >= self.state.map_height:
+                return
+
+            if self.state.builder_step == 0:
+                # Target tile must be empty (TileEmpty = 0)
+                tile_type = self.state.tile_cache.get((grid_x, grid_y))
+                if tile_type != 0:
+                    return # Must start building on an empty tile
+
+                self.state.builder_x1 = grid_x
+                self.state.builder_y1 = grid_y
+                self.state.builder_step = 1
+            elif self.state.builder_step == 1:
+                dx = grid_x - self.state.builder_x1
+                dy = grid_y - self.state.builder_y1
+
+                # Clicked same tile -> cancel selection
+                if dx == 0 and dy == 0:
+                    self.state.builder_step = 0
+                    return
+
+                # Calculate strictly adjacent coordinates
+                if abs(dx) >= abs(dy):
+                    x2 = self.state.builder_x1 + (1 if dx >= 0 else -1)
+                    y2 = self.state.builder_y1
+                else:
+                    x2 = self.state.builder_x1
+                    y2 = self.state.builder_y1 + (1 if dy >= 0 else -1)
+
+                # Ensure second tile is empty (0) OR a permanent wall (1)
+                tile_type2 = self.state.tile_cache.get((x2, y2))
+                if tile_type2 not in (0, 1):
+                    return
+
+                # Send build message to server
+                self._send({
+                    "type": "BUILD",
+                    "coords": [self.state.builder_x1, self.state.builder_y1, x2, y2]
+                })
+                self.state.builder_step = 0

@@ -92,9 +92,9 @@ const (
 
 // Cherry & Chest spawning
 const (
-	CherryFirstSpawnTicks  = 30 * TicksPerSec // 30 seconds after game start
-	CherryIntervalMinTicks = 15 * TicksPerSec // min 15s between cherries
-	CherryIntervalMaxTicks = 20 * TicksPerSec // max 20s between cherries
+	CherryFirstSpawnTicks  = 5 * TicksPerSec  // 5 seconds after game start
+	CherryIntervalMinTicks = 5 * TicksPerSec  // min 5s between cherries
+	CherryIntervalMaxTicks = 10 * TicksPerSec // max 10s between cherries
 	CherryPoints           = 50
 )
 

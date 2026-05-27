@@ -51,15 +51,24 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 			case RoleTracker:
 				p.VisionRadius = VisionTracker
 				p.Speed = SpeedTracker
-				p.Ability = NewTrackerAbility()
+				ta := NewTrackerAbility()
+				ta.lastUsed = time.Now()
+				p.Ability = ta
+				p.AbilityReady = ta.lastUsed.Add(time.Duration(ta.GetCooldownMs()) * time.Millisecond)
 			case RoleBuilder:
 				p.VisionRadius = VisionBuilder
 				p.Speed = SpeedBuilder
-				p.Ability = NewBuilderAbility()
+				ba := NewBuilderAbility()
+				ba.lastUsed = time.Now()
+				p.Ability = ba
+				p.AbilityReady = ba.lastUsed.Add(time.Duration(ba.GetCooldownMs()) * time.Millisecond)
 			case RoleSprinter:
 				p.VisionRadius = VisionSprinter
 				p.Speed = SpeedSprinter
-				p.Ability = NewSprintAbility()
+				sa := NewSprintAbility()
+				sa.lastUsed = time.Now()
+				p.Ability = sa
+				p.AbilityReady = sa.lastUsed.Add(time.Duration(sa.GetCooldownMs()) * time.Millisecond)
 			}
 		}
 

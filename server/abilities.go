@@ -60,110 +60,14 @@ type BuilderAbility struct {
 
 func NewBuilderAbility() *BuilderAbility { return &BuilderAbility{} }
 
-func (b *BuilderAbility) GetCooldownMs() int { return 20_000 }
+func (b *BuilderAbility) GetCooldownMs() int { return 30_000 }
 
 func (b *BuilderAbility) IsReady(now time.Time) bool {
 	return now.After(b.lastUsed.Add(time.Duration(b.GetCooldownMs()) * time.Millisecond))
 }
 
 func (b *BuilderAbility) UseAbility(g *Game, caster *Player) {
-	b.lastUsed = time.Now()
-
-	cx := int(math.Round(caster.X))
-	cy := int(math.Round(caster.Y))
-
-	// Snap the facing direction to the dominant cardinal axis.
-	dirX, dirY := caster.DirX, caster.DirY
-	if dirX == 0 && dirY == 0 {
-		dirY = 1 // Default: face down.
-	}
-	var faceX, faceY int
-	if math.Abs(dirX) >= math.Abs(dirY) {
-		if dirX > 0 {
-			faceX = 1
-		} else {
-			faceX = -1
-		}
-	} else {
-		if dirY > 0 {
-			faceY = 1
-		} else {
-			faceY = -1
-		}
-	}
-
-	// The two wall tiles: builder's own tile + one in their facing direction.
-	walls := [2][2]int{
-		{cx, cy},
-		{cx + faceX, cy + faceY},
-	}
-
-	// Place both walls (overwriting pellets if necessary).
-	for _, wt := range walls {
-		tx, ty := wt[0], wt[1]
-		if tx < 1 || tx >= g.mapWidth-1 || ty < 1 || ty >= g.mapHeight-1 {
-			continue
-		}
-		if g.grid[ty][tx] == TilePellet {
-			g.remainingPellets--
-		}
-		g.grid[ty][tx] = TileDestructibleWall
-	}
-
-	// Push the builder to the nearest free adjacent tile.
-	// Order of preference: backward → left perpendicular → right perpendicular → all cardinals.
-	pushCandidates := [][2]int{
-		{-faceX, -faceY},     // Backward (most natural: opposite of wall direction)
-		{-faceY, faceX},      // Left perpendicular
-		{faceY, -faceX},      // Right perpendicular
-		{-1, 0}, {1, 0}, {0, -1}, {0, 1}, // Remaining cardinals
-		{-1, -1}, {1, -1}, {-1, 1}, {1, 1}, // Diagonals (last resort)
-	}
-
-	pushed := false
-	for _, off := range pushCandidates {
-		newTX := cx + off[0]
-		newTY := cy + off[1]
-		if newTX < 0 || newTX >= g.mapWidth || newTY < 0 || newTY >= g.mapHeight {
-			continue
-		}
-		t := g.grid[newTY][newTX]
-		if t == TileWall || t == TileDestructibleWall {
-			continue
-		}
-		// Free tile — move builder here (centred inside the tile).
-		caster.X = float64(newTX) + 0.5
-		caster.Y = float64(newTY) + 0.5
-		pushed = true
-		break
-	}
-
-	if !pushed {
-		// Completely surrounded: apply a brief stun (rare edge case).
-		caster.IsStunned = true
-		caster.StunUntil = time.Now().Add(500 * time.Millisecond)
-	}
-
-	// Schedule both walls' auto-destruction after 15 seconds.
-	done := g.done
-	wallsCopy := walls
-	go func() {
-		select {
-		case <-done:
-			return
-		case <-time.After(15 * time.Second):
-		}
-		g.mu.Lock()
-		for _, wt := range wallsCopy {
-			tx, ty := wt[0], wt[1]
-			if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
-				if g.grid[ty][tx] == TileDestructibleWall {
-					g.grid[ty][tx] = TileEmpty
-				}
-			}
-		}
-		g.mu.Unlock()
-	}()
+	// Builder uses click-to-build via handleBuild instead of dash/space.
 }
 
 

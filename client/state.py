@@ -120,6 +120,15 @@ class GameState:
         self.predicted_x: float = 0.0
         self.predicted_y: float = 0.0
 
+        # Client-side camera tracking (updated in Pyxel thread)
+        self.camera_x: float = 0.0
+        self.camera_y: float = 0.0
+
+        # Client-side builder selection state (updated in Pyxel thread)
+        self.builder_step: int = 0
+        self.builder_x1: int = -1
+        self.builder_y1: int = -1
+
         # --- Finished ---
         self.winner: Optional[str] = None
         self.scores: dict[str, int] = {}
@@ -180,7 +189,8 @@ class GameState:
                 )
             self.players = new_players
 
-            # Tiles (additive cache)
+            # Tiles (additive cache cleared each tick to implement strict fog of war)
+            self.tile_cache.clear()
             for t in data.get("tiles", []):
                 self.tile_cache[(t["x"], t["y"])] = t["t"]
 
@@ -333,6 +343,11 @@ class GameState:
                 "map_height": self.map_height,
                 "predicted_x": self.predicted_x,
                 "predicted_y": self.predicted_y,
+                "camera_x": self.camera_x,
+                "camera_y": self.camera_y,
+                "builder_step": self.builder_step,
+                "builder_x1": self.builder_x1,
+                "builder_y1": self.builder_y1,
                 "winner": self.winner,
                 "scores": dict(self.scores),
                 "reveals": dict(self.reveals),

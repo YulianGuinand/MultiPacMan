@@ -218,6 +218,8 @@ func (g *Game) HandleMessage(clientID string, data []byte) {
 		g.handleUseInvis(clientID)
 	case MsgTypeSpectateNext:
 		g.handleSpectateNext(clientID)
+	case MsgTypeBuild:
+		g.handleBuild(clientID, msg.Coords)
 	}
 }
 
@@ -338,6 +340,9 @@ func (g *Game) startGameLocked() {
 	g.nextCherryTick = CherryFirstSpawnTicks
 	g.nextChestTick = ChestSpawnIntervalTicks
 
+	// Spawn an initial cherry immediately at game start
+	g.spawnCherryLocked()
+
 	g.state = StatePlaying
 
 	// Notify each player of their role and spawn position.
@@ -393,7 +398,7 @@ func (g *Game) processTick() {
 			p.DirY = input.DirY
 
 			// Activate ability.
-			if input.Dash && p.Ability != nil && p.Ability.IsReady(now) {
+			if input.Dash && p.Ability != nil && p.Role != RoleBuilder && p.Ability.IsReady(now) {
 				p.Ability.UseAbility(g, p)
 				// Set AbilityReady so the cooldown bar updates immediately.
 				p.AbilityReady = now.Add(time.Duration(p.Ability.GetCooldownMs()) * time.Millisecond)
@@ -463,20 +468,29 @@ func (g *Game) processTick() {
 		if p.Role != RolePacman || p.IsDead || p.IsStunned {
 			continue
 		}
-		tx := int(math.Round(p.X))
-		ty := int(math.Round(p.Y))
-		if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
-			if g.grid[ty][tx] == TilePellet {
-				g.grid[ty][tx] = TileEmpty
-				p.Score += 10
-				g.remainingPellets--
+		xMin := int(math.Floor(p.X - PlayerRadius))
+		xMax := int(math.Floor(p.X + PlayerRadius))
+		yMin := int(math.Floor(p.Y - PlayerRadius))
+		yMax := int(math.Floor(p.Y + PlayerRadius))
+
+		for ty := yMin; ty <= yMax; ty++ {
+			for tx := xMin; tx <= xMax; tx++ {
+				if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
+					if g.grid[ty][tx] == TilePellet {
+						g.grid[ty][tx] = TileEmpty
+						p.Score += 10
+						g.remainingPellets--
+					}
+				}
 			}
 		}
 	}
 
 	// --- 5. Cherry spawning ---
 	if g.tick >= g.nextCherryTick {
-		g.spawnCherryLocked()
+		if len(g.cherries) < 5 {
+			g.spawnCherryLocked()
+		}
 		interval := CherryIntervalMinTicks + g.rng.Intn(CherryIntervalMaxTicks-CherryIntervalMinTicks+1)
 		g.nextCherryTick = g.tick + int64(interval)
 	}
@@ -486,11 +500,26 @@ func (g *Game) processTick() {
 		if p.Role != RolePacman || p.IsDead || p.IsStunned {
 			continue
 		}
-		px := int(math.Round(p.X))
-		py := int(math.Round(p.Y))
+		xMin := int(math.Floor(p.X - PlayerRadius))
+		xMax := int(math.Floor(p.X + PlayerRadius))
+		yMin := int(math.Floor(p.Y - PlayerRadius))
+		yMax := int(math.Floor(p.Y + PlayerRadius))
+
 		remaining := g.cherries[:0]
 		for _, c := range g.cherries {
-			if c.X == px && c.Y == py {
+			collected := false
+			for ty := yMin; ty <= yMax; ty++ {
+				for tx := xMin; tx <= xMax; tx++ {
+					if c.X == tx && c.Y == ty {
+						collected = true
+						break
+					}
+				}
+				if collected {
+					break
+				}
+			}
+			if collected {
 				p.Score += CherryPoints
 				p.Lives++
 				log.Printf("[game %s] %s collected cherry (+%d pts, lives=%d)", g.ID, p.ID, CherryPoints, p.Lives)
@@ -512,11 +541,26 @@ func (g *Game) processTick() {
 		if p.Role != RolePacman || p.IsDead || p.IsStunned {
 			continue
 		}
-		px := int(math.Round(p.X))
-		py := int(math.Round(p.Y))
+		xMin := int(math.Floor(p.X - PlayerRadius))
+		xMax := int(math.Floor(p.X + PlayerRadius))
+		yMin := int(math.Floor(p.Y - PlayerRadius))
+		yMax := int(math.Floor(p.Y + PlayerRadius))
+
 		remaining := g.chests[:0]
 		for _, ch := range g.chests {
-			if ch.X == px && ch.Y == py {
+			collected := false
+			for ty := yMin; ty <= yMax; ty++ {
+				for tx := xMin; tx <= xMax; tx++ {
+					if ch.X == tx && ch.Y == ty {
+						collected = true
+						break
+					}
+				}
+				if collected {
+					break
+				}
+			}
+			if collected {
 				if p.InvisCharges < InvisMaxCharges {
 					p.InvisCharges++
 					log.Printf("[game %s] %s collected chest (invis charges=%d)", g.ID, p.ID, p.InvisCharges)
@@ -593,6 +637,14 @@ func (g *Game) processTick() {
 	if g.remainingPellets <= 0 {
 		g.endGameLocked("PACMAN")
 		return
+	}
+
+	// Pacmans win if any Pacman reaches 3000 points.
+	for _, p := range g.players {
+		if p.Role == RolePacman && p.Score >= 3000 {
+			g.endGameLocked("PACMAN")
+			return
+		}
 	}
 
 	// Ghosts win if all Pacmans are dead.
@@ -950,4 +1002,90 @@ func (g *Game) endGameLocked(winner string) {
 	}
 	log.Printf("[game %s] game over — winner: %s", g.ID, winner)
 	g.closeDone()
+}
+
+func (g *Game) handleBuild(clientID string, coords []int) {
+	if g.GetState() != StatePlaying {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	p, ok := g.players[clientID]
+	if !ok || p.IsDead || p.Role != RoleBuilder || p.IsStunned {
+		return
+	}
+
+	now := time.Now()
+	if p.Ability == nil || !p.Ability.IsReady(now) {
+		return
+	}
+
+	if len(coords) != 4 {
+		return
+	}
+
+	x1, y1, x2, y2 := coords[0], coords[1], coords[2], coords[3]
+
+	// 1. Vérification des limites de la map
+	if x1 < 0 || x1 >= g.mapWidth || y1 < 0 || y1 >= g.mapHeight ||
+		x2 < 0 || x2 >= g.mapWidth || y2 < 0 || y2 >= g.mapHeight {
+		return // Hors limites
+	}
+
+	// 2. Vérification de l'adjacence
+	dx := abs(x1 - x2)
+	dy := abs(y1 - y2)
+	if (dx + dy) != 1 {
+		return // Blocs non adjacents
+	}
+
+	// 3. Vérification de la disponibilité :
+	// Le premier bloc doit être TileEmpty. Le second peut être TileEmpty ou TileWall.
+	if g.grid[y1][x1] != TileEmpty || (g.grid[y2][x2] != TileEmpty && g.grid[y2][x2] != TileWall) {
+		return // Zone occupée (autre qu'un mur permanent ou vide)
+	}
+
+	// 4. Application
+	g.grid[y1][x1] = TileDestructibleWall
+
+	// On ne remplace pas un mur permanent par un mur destructible
+	if g.grid[y2][x2] == TileEmpty {
+		g.grid[y2][x2] = TileDestructibleWall
+	}
+
+	// 5. Déclenchement du cooldown du Builder
+	if ba, ok := p.Ability.(*BuilderAbility); ok {
+		ba.lastUsed = now
+	}
+	p.AbilityReady = now.Add(time.Duration(p.Ability.GetCooldownMs()) * time.Millisecond)
+
+	// 6. Schedule auto-destruction after 15 seconds
+	done := g.done
+	wallsCopy := [2][2]int{{x1, y1}, {x2, y2}}
+	go func() {
+		select {
+		case <-done:
+			return
+		case <-time.After(15 * time.Second):
+		}
+		g.mu.Lock()
+		for _, wt := range wallsCopy {
+			tx, ty := wt[0], wt[1]
+			if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
+				if g.grid[ty][tx] == TileDestructibleWall {
+					g.grid[ty][tx] = TileEmpty
+				}
+			}
+		}
+		g.mu.Unlock()
+	}()
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
 }
