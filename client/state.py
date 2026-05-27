@@ -15,6 +15,16 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 
+# 30Hz speeds matching server (tiles per tick)
+SPEEDS_30HZ = {
+    "PACMAN": 0.110,
+    "GHOST_TRACKER": 0.080,
+    "GHOST_BUILDER": 0.078,
+    "GHOST_SPRINTER": 0.096,
+}
+DEFAULT_SPEED_30HZ = 0.080
+
+
 # ---------------------------------------------------------------------------
 # Sub-structures (used inside snapshots — plain dataclasses, no locking)
 # ---------------------------------------------------------------------------
@@ -64,6 +74,8 @@ class GameStatus:
     cherry_dir_angle: float = -999.0
     tracker_dir_angle: float = -999.0
     spectating_id: str = ""
+    is_dashing: bool = False
+    dash_remaining_ticks: int = 0
 
 
 @dataclass
@@ -94,6 +106,7 @@ class GameState:
         self.connected: bool = False
         self.local_id: Optional[str] = None
         self.room_id: Optional[str] = None
+        self.udp_port: int = 0
 
         # --- Phase ---
         self.room_state: str = "LOBBY"
@@ -105,11 +118,14 @@ class GameState:
 
         # --- Playing ---
         self.players: dict[str, PlayerData] = {}
+        self.prev_players: dict[str, PlayerData] = {}   # previous tick positions for interpolation
+        self.interp_t: float = 0.0                       # interpolation progress 0..1
         self.footprints: list[FootprintData] = []
         self.cherries: list[CherryData] = []
         self.chests: list[ChestData] = []
         # tile_cache: (x, y) → tile_type — additive, tiles stay until overridden
         self.tile_cache: dict[tuple[int, int], int] = {}
+        self.pending_inputs: list[dict] = []
         self.status: GameStatus = GameStatus()
         self.map_width: int = 0
         self.map_height: int = 0
@@ -119,6 +135,11 @@ class GameState:
         # Client-side predicted position (updated in Pyxel thread)
         self.predicted_x: float = 0.0
         self.predicted_y: float = 0.0
+        self.prev_predicted_x: float = 0.0
+        self.prev_predicted_y: float = 0.0
+        self.local_interp_t: float = 1.0
+        self.dash_dir_x: float = 0.0
+        self.dash_dir_y: float = 0.0
 
         # Client-side camera tracking (updated in Pyxel thread)
         self.camera_x: float = 0.0
@@ -146,6 +167,7 @@ class GameState:
             self.local_id = data["your_id"]
             self.room_id = data["room_id"]
             self.room_state = data["room_state"]
+            self.udp_port = data.get("udp_port", 0)
             self.connected = True
 
     def update_lobby(self, data: dict) -> None:
@@ -164,9 +186,13 @@ class GameState:
             self.status.role = data["your_role"]
             self.map_width = data["map_width"]
             self.map_height = data["map_height"]
+            self.tile_cache.clear()
             sx, sy = data["spawn_x"], data["spawn_y"]
             self.predicted_x = sx
             self.predicted_y = sy
+            self.prev_predicted_x = sx
+            self.prev_predicted_y = sy
+            self.local_interp_t = 1.0
             # Seed our own entry in the players dict.
             if self.local_id:
                 self.players[self.local_id] = PlayerData(
@@ -175,10 +201,13 @@ class GameState:
 
     def update_game_state(self, data: dict) -> None:
         with self._lock:
-            self.last_tick = data.get("tick", 0)
+            tick = data.get("tick", 0)
+            if tick <= self.last_tick:
+                return  # Discard out-of-order or duplicate packets
+            self.last_tick = tick
             self.last_seq = data.get("last_seq", 0)
 
-            # Players
+            # Players — store previous for interpolation
             new_players: dict[str, PlayerData] = {}
             for p in data.get("players", []):
                 new_players[p["id"]] = PlayerData(
@@ -187,10 +216,16 @@ class GameState:
                     y=p["y"],
                     revealed_role=p.get("revealed_role"),
                 )
+            self.prev_players = dict(self.players)  # snapshot current as previous
             self.players = new_players
+            self.interp_t = 0.0  # reset interpolation
 
-            # Tiles (additive cache cleared each tick to implement strict fog of war)
-            self.tile_cache.clear()
+            # Periodic debugging log: once per second (30 ticks)
+            if tick % 30 == 0:
+                import logging
+                logging.getLogger("state").info("Tick %d: players in state: %s", tick, [(p.id, p.x, p.y) for p in self.players.values()])
+
+            # Tiles (apply deltas — server sends only changed tiles)
             for t in data.get("tiles", []):
                 self.tile_cache[(t["x"], t["y"])] = t["t"]
 
@@ -226,23 +261,42 @@ class GameState:
             self.status.cherry_dir_angle = s.get("cherry_dir_angle", -999.0)
             self.status.tracker_dir_angle = s.get("tracker_dir_angle", -999.0)
             self.status.spectating_id = s.get("spectating_id", "")
+            self.status.is_dashing = s.get("is_dashing", False)
+            self.status.dash_remaining_ticks = s.get("dash_remaining_ticks", 0)
 
-            # Server reconciliation for local player.
-            # With client-side wall collision, discrepancy should be < 0.1 tiles
-            # in normal play. Large gaps indicate wall penetration or teleport.
             if self.local_id and self.local_id in self.players:
                 srv = self.players[self.local_id]
-                dx = srv.x - self.predicted_x
-                dy = srv.y - self.predicted_y
-                dist = (dx * dx + dy * dy) ** 0.5
-                if dist > 2.5:
-                    # Very large gap: hard snap (e.g. respawn, stun teleport).
-                    self.predicted_x = srv.x
-                    self.predicted_y = srv.y
-                elif dist > 0.15:
-                    # Small accumulated error: gentle 10% pull toward server.
-                    self.predicted_x += dx * 0.10
-                    self.predicted_y += dy * 0.10
+                
+                # Filter out inputs already processed by the server
+                self.pending_inputs = [inp for inp in self.pending_inputs if inp["seq"] > self.last_seq]
+                
+                # Replay remaining pending inputs starting from authoritative server position
+                px, py = srv.x, srv.y
+                role = self.status.role
+                dash_ticks = self.status.dash_remaining_ticks
+                
+                for inp in self.pending_inputs:
+                    if self.status.stunned:
+                        speed = 0.0
+                        dx, dy = inp["dir_x"], inp["dir_y"]
+                    elif dash_ticks > 0:
+                        speed = 0.350  # SpeedDash
+                        dx, dy = self.dash_dir_x, self.dash_dir_y
+                        dash_ticks -= 1
+                    else:
+                        speed = SPEEDS_30HZ.get(role, DEFAULT_SPEED_30HZ)
+                        dx, dy = inp["dir_x"], inp["dir_y"]
+                    px, py = self._predict_step(px, py, dx, dy, speed)
+                    
+                # Compare the reconciled position with the current predicted position
+                rdx = px - self.predicted_x
+                rdy = py - self.predicted_y
+                reconciled_dist = (rdx * rdx + rdy * rdy) ** 0.5
+                
+                if reconciled_dist > 0.1:
+                    # Apply the correction if it exceeds the visual tolerance threshold
+                    self.predicted_x = px
+                    self.predicted_y = py
 
     def update_game_over(self, data: dict) -> None:
         with self._lock:
@@ -266,29 +320,57 @@ class GameState:
     def apply_local_prediction(self, dir_x: float, dir_y: float, speed: float) -> None:
         """Apply client-side prediction with wall collision against the known tile cache."""
         with self._lock:
-            # Don't predict if dead.
-            if self.status.is_dead:
+            # Don't predict if dead or stunned.
+            if self.status.is_dead or self.status.stunned:
                 return
 
-            new_x = self.predicted_x + dir_x * speed
-            new_y = self.predicted_y + dir_y * speed
+            self.prev_predicted_x = self.predicted_x
+            self.prev_predicted_y = self.predicted_y
+            self.local_interp_t = 0.0
 
-            # Client-side wall collision: try combined move first, then axis-by-axis.
-            if not self._would_collide(new_x, new_y):
-                self.predicted_x = new_x
-                self.predicted_y = new_y
+            if self.status.dash_remaining_ticks > 0:
+                dx = self.dash_dir_x
+                dy = self.dash_dir_y
+                self.status.dash_remaining_ticks -= 1
             else:
-                # Try sliding along each axis independently.
-                if not self._would_collide(new_x, self.predicted_y):
-                    self.predicted_x = new_x
-                elif not self._would_collide(self.predicted_x, new_y):
-                    self.predicted_y = new_y
-                # else: fully blocked, don't move.
+                dx = dir_x
+                dy = dir_y
 
-            # Clamp to map bounds.
-            if self.map_width > 0:
-                self.predicted_x = max(0.4, min(self.map_width - 1.4, self.predicted_x))
-                self.predicted_y = max(0.4, min(self.map_height - 1.4, self.predicted_y))
+            self.predicted_x, self.predicted_y = self._predict_step(
+                self.predicted_x, self.predicted_y, dx, dy, speed
+            )
+
+            # Local client-side prediction of pellet eating for instant visual feedback
+            if self.status.role == "PACMAN":
+                px, py = self.predicted_x, self.predicted_y
+                RADIUS = 0.35
+                x_min = int(px - RADIUS)
+                x_max = int(px + RADIUS)
+                y_min = int(py - RADIUS)
+                y_max = int(py + RADIUS)
+                for ty in range(y_min, y_max + 1):
+                    for tx in range(x_min, x_max + 1):
+                        if self.tile_cache.get((tx, ty)) == self.TILE_PELLET:
+                            self.tile_cache[(tx, ty)] = self.TILE_EMPTY
+
+    def _predict_step(self, px: float, py: float, dir_x: float, dir_y: float, speed: float) -> tuple[float, float]:
+        new_x = px + dir_x * speed
+        new_y = py + dir_y * speed
+
+        # Slide collision logic
+        if not self._would_collide(new_x, new_y):
+            px = new_x
+            py = new_y
+        else:
+            if not self._would_collide(new_x, py):
+                px = new_x
+            elif not self._would_collide(px, new_y):
+                py = new_y
+
+        if self.map_width > 0:
+            px = max(0.4, min(self.map_width - 1.4, px))
+            py = max(0.4, min(self.map_height - 1.4, py))
+        return round(px, 3), round(py, 3)
 
     def _would_collide(self, x: float, y: float) -> bool:
         """Return True if the player circle at (x, y) overlaps a known solid tile.
@@ -322,6 +404,8 @@ class GameState:
                 "min_players": self.min_players,
                 "max_players": self.max_players,
                 "players": dict(self.players),
+                "prev_players": dict(self.prev_players),
+                "interp_t": self.interp_t,
                 "footprints": list(self.footprints),
                 "cherries": list(self.cherries),
                 "chests": list(self.chests),
@@ -338,11 +422,16 @@ class GameState:
                     cherry_dir_angle=self.status.cherry_dir_angle,
                     tracker_dir_angle=self.status.tracker_dir_angle,
                     spectating_id=self.status.spectating_id,
+                    is_dashing=self.status.is_dashing,
+                    dash_remaining_ticks=self.status.dash_remaining_ticks,
                 ),
                 "map_width": self.map_width,
                 "map_height": self.map_height,
                 "predicted_x": self.predicted_x,
                 "predicted_y": self.predicted_y,
+                "prev_predicted_x": self.prev_predicted_x,
+                "prev_predicted_y": self.prev_predicted_y,
+                "local_interp_t": self.local_interp_t,
                 "camera_x": self.camera_x,
                 "camera_y": self.camera_y,
                 "builder_step": self.builder_step,

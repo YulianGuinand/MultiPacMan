@@ -45,6 +45,7 @@ const (
 	MsgTypeUseInvis     = "USE_INVIS"
 	MsgTypeSpectateNext = "SPECTATE_NEXT"
 	MsgTypeBuild        = "BUILD"
+	MsgTypeConfirmUDP   = "CONFIRM_UDP"
 )
 
 // =============================================================================
@@ -83,18 +84,18 @@ const (
 // Speed in tiles per tick (30 Hz)
 // Pacman is ~10% faster than average ghost
 const (
-	SpeedPacman   = 0.150 // ~4.5 tiles/sec
-	SpeedTracker  = 0.110 // ~3.3 tiles/sec
-	SpeedBuilder  = 0.107 // ~3.2 tiles/sec
-	SpeedSprinter = 0.133 // ~4.0 tiles/sec
-	SpeedDash     = 0.500 // ~15 tiles/sec during dash
+	SpeedPacman   = 0.110 // ~3.3 tiles/sec
+	SpeedTracker  = 0.080 // ~2.4 tiles/sec
+	SpeedBuilder  = 0.078 // ~2.3 tiles/sec
+	SpeedSprinter = 0.096 // ~2.9 tiles/sec
+	SpeedDash     = 0.350 // ~10.5 tiles/sec during dash
 )
 
 // Cherry & Chest spawning
 const (
-	CherryFirstSpawnTicks  = 5 * TicksPerSec  // 5 seconds after game start
-	CherryIntervalMinTicks = 5 * TicksPerSec  // min 5s between cherries
-	CherryIntervalMaxTicks = 10 * TicksPerSec // max 10s between cherries
+	CherryFirstSpawnTicks  = 30 * TicksPerSec  // 30 seconds after game start
+	CherryIntervalMinTicks = 15 * TicksPerSec  // min 15s between cherries
+	CherryIntervalMaxTicks = 20 * TicksPerSec  // max 20s between cherries
 	CherryPoints           = 50
 )
 
@@ -143,12 +144,12 @@ type ErrorPayload struct {
 	Message string `json:"message"`
 }
 
-// WelcomePayload is the first message sent upon connection.
 type WelcomePayload struct {
 	Type      string `json:"type"`
 	YourID    string `json:"your_id"`
 	RoomID    string `json:"room_id"`
 	RoomState string `json:"room_state"`
+	UDPPort   int    `json:"udp_port"`
 }
 
 // LobbyPlayer represents one player entry in the lobby list.
@@ -203,6 +204,8 @@ type PlayerStatus struct {
 	CherryDirAngle  float64 `json:"cherry_dir_angle"`  // radians, -999 = none
 	TrackerDirAngle float64 `json:"tracker_dir_angle"` // radians, -999 = not active
 	SpectatingID    string  `json:"spectating_id,omitempty"`
+	IsDashing       bool    `json:"is_dashing"`
+	DashRemainingTicks int `json:"dash_remaining_ticks"`
 }
 
 // GameStatePayload is the per-tick world snapshot sent to each player (30 Hz).
@@ -243,4 +246,13 @@ type RoomSummaryPayload struct {
 type SpawnedItem struct {
 	ID   string
 	X, Y int
+}
+
+// UDPInput is sent by clients over UDP for fast inputs
+type UDPInput struct {
+	ClientID string  `json:"client_id"`
+	Seq      int     `json:"seq"`
+	DirX     float64 `json:"dir_x"`
+	DirY     float64 `json:"dir_y"`
+	Dash     bool    `json:"dash"`
 }

@@ -102,7 +102,7 @@ func (s *SprintAbility) UseAbility(g *Game, caster *Player) {
 	// Normalise direction vector.
 	length := math.Sqrt(dirX*dirX + dirY*dirY)
 	caster.IsDashing = true
-	caster.DashUntil = time.Now().Add(300 * time.Millisecond)
+	caster.DashRemainingTicks = 9
 	caster.DashDirX = dirX / length
 	caster.DashDirY = dirY / length
 }

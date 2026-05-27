@@ -18,6 +18,9 @@ from typing import Optional
 import websockets
 import websockets.exceptions
 
+import socket
+from urllib.parse import urlparse
+
 from state import GameState
 
 logger = logging.getLogger(__name__)
@@ -38,6 +41,9 @@ class NetworkManager:
         self._send_queue: Optional[asyncio.Queue] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._udp_sock: Optional[socket.socket] = None
+        self.server_host = ""
+        self.udp_confirmed = False
 
     # -----------------------------------------------------------------------
     # Public API (Pyxel thread)
@@ -71,14 +77,29 @@ class NetworkManager:
     # -----------------------------------------------------------------------
 
     def _run_loop(self, url: str) -> None:
+        parsed = urlparse(url)
+        self.server_host = parsed.hostname or "127.0.0.1"
+        if self.server_host == "localhost":
+            self.server_host = "127.0.0.1"
+
+        self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self._udp_sock.bind(("", 0))
+
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+
+        # Run incoming UDP packet reader as background task
+        self._loop.create_task(self._recv_udp_loop())
+
         try:
             self._loop.run_until_complete(self._connect(url))
         except Exception as exc:
             logger.error("Network loop fatal error: %s", exc)
             self.state.set_error(str(exc))
         finally:
+            if self._udp_sock:
+                self._udp_sock.close()
+                self._udp_sock = None
             self._loop.close()
 
     async def _connect(self, url: str) -> None:
@@ -86,6 +107,7 @@ class NetworkManager:
         delay = 1.0
 
         while self._running:
+            self.udp_confirmed = False
             try:
                 logger.info("Connecting to %s …", url)
                 async with websockets.connect(
@@ -128,10 +150,70 @@ class NetworkManager:
                 # Shutdown sentinel.
                 break
             try:
-                await ws.send(json.dumps(msg))
+                is_input = (msg.get("type") == "INPUT")
+                sent_udp = False
+                if is_input and self.state.udp_port > 0 and self.state.local_id and self._udp_sock:
+                    try:
+                        udp_payload = {
+                            "client_id": self.state.local_id,
+                            "seq": msg.get("seq"),
+                            "dir_x": msg.get("dir_x"),
+                            "dir_y": msg.get("dir_y"),
+                            "dash": msg.get("dash", False),
+                        }
+                        if udp_payload["dir_x"] != 0.0 or udp_payload["dir_y"] != 0.0:
+                            logger.info("Sending non-zero UDP input: %s", udp_payload)
+                        data = json.dumps(udp_payload).encode("utf-8")
+                        self._udp_sock.sendto(data, (self.server_host, self.state.udp_port))
+                        sent_udp = True
+                    except Exception as e:
+                        logger.debug("Failed sending UDP input: %s", e)
+                
+                # Send to WebSocket if it's not an input, or if UDP is not confirmed yet, or if UDP send failed
+                if not is_input or not self.udp_confirmed or not sent_udp:
+                    await ws.send(json.dumps(msg))
+                    if is_input and (msg.get("dir_x") != 0.0 or msg.get("dir_y") != 0.0):
+                        logger.info("Sending non-zero TCP input: %s", msg)
             except Exception as exc:
                 logger.error("Send error: %s", exc)
                 break
+
+    async def _recv_udp_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+        while self._running:
+            if not self._udp_sock:
+                await asyncio.sleep(0.1)
+                continue
+            try:
+                data, addr = await loop.run_in_executor(None, self._udp_sock.recvfrom, 65535)
+                if data:
+                    # Drain any pending UDP packets from the OS buffer to keep only the newest one
+                    last_data = data
+                    while self._running:
+                        try:
+                            self._udp_sock.setblocking(False)
+                            next_data, next_addr = self._udp_sock.recvfrom(65535)
+                            if next_data:
+                                last_data = next_data
+                        except BlockingIOError:
+                            break
+                        finally:
+                            self._udp_sock.setblocking(True)
+
+                    try:
+                        payload = json.loads(last_data.decode("utf-8"))
+                        if payload.get("type") == "GAME_STATE":
+                            self.state.update_game_state(payload)
+                            if not self.udp_confirmed:
+                                self.udp_confirmed = True
+                                logger.info("UDP connection confirmed by receiving GAME_STATE!")
+                                self.send({"type": "CONFIRM_UDP"})
+                    except Exception as e:
+                        logger.error("Error parsing UDP game state: %s", e)
+            except Exception as exc:
+                if self._running:
+                    logger.debug("UDP receive error: %s", exc)
+                await asyncio.sleep(0.01)
 
     def _dispatch(self, data: dict) -> None:
         msg_type = data.get("type")

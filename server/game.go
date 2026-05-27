@@ -43,6 +43,7 @@ type Player struct {
 	// Sprinter dash state
 	IsDashing          bool
 	DashUntil          time.Time
+	DashRemainingTicks int
 	DashDirX, DashDirY float64
 
 	// Lives (Pacman — granted by cherries)
@@ -56,6 +57,10 @@ type Player struct {
 	// Death & spectation
 	IsDead       bool
 	SpectatingID string // ID of teammate being observed when dead
+
+	// Delta tile tracking: last tiles sent to this player (for compression).
+	// Key: (x,y) packed as int, value: tile type.
+	LastSentTiles map[int]int
 
 	// Lobby
 	Ready bool
@@ -163,8 +168,9 @@ func (g *Game) AddClient(c *Client) bool {
 
 	g.clients[c.ID] = c
 	g.players[c.ID] = &Player{
-		ID:     c.ID,
-		Client: c,
+		ID:            c.ID,
+		Client:        c,
+		LastSentTiles: make(map[int]int),
 	}
 
 	c.SendJSON(WelcomePayload{
@@ -172,6 +178,7 @@ func (g *Game) AddClient(c *Client) bool {
 		YourID:    c.ID,
 		RoomID:    g.ID,
 		RoomState: g.state,
+		UDPPort:   GlobalUDPPort,
 	})
 
 	g.broadcastLobbyUpdateLocked()
@@ -220,6 +227,17 @@ func (g *Game) HandleMessage(clientID string, data []byte) {
 		g.handleSpectateNext(clientID)
 	case MsgTypeBuild:
 		g.handleBuild(clientID, msg.Coords)
+	case MsgTypeConfirmUDP:
+		g.handleConfirmUDP(clientID)
+	}
+}
+
+func (g *Game) handleConfirmUDP(clientID string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if c, ok := g.clients[clientID]; ok {
+		c.UDPConfirmed = true
+		log.Printf("[game %s] Client %s UDP connection confirmed", g.ID, clientID)
 	}
 }
 
@@ -413,6 +431,8 @@ func (g *Game) processTick() {
 			continue
 		}
 
+		startX, startY := p.X, p.Y
+
 		// Clear expired stun.
 		if p.IsStunned && now.After(p.StunUntil) {
 			p.IsStunned = false
@@ -426,9 +446,10 @@ func (g *Game) processTick() {
 
 		// Dash overrides speed and direction.
 		if p.IsDashing {
-			if now.After(p.DashUntil) {
+			if p.DashRemainingTicks <= 0 {
 				p.IsDashing = false
 			} else {
+				p.DashRemainingTicks--
 				speed = SpeedDash
 				dirX = p.DashDirX
 				dirY = p.DashDirY
@@ -442,17 +463,33 @@ func (g *Game) processTick() {
 			p.X = newX
 			p.Y = newY
 		} else {
-			// Sprinter collides with wall mid-dash → self-stun.
-			if p.IsDashing && p.Role == RoleSprinter {
-				p.IsDashing = false
-				p.IsStunned = true
-				p.StunUntil = now.Add(StunSeconds * time.Second)
+			// Slide logic: try moving horizontally or vertically independently
+			if !g.wouldCollide(newX, p.Y) {
+				p.X = newX
+			} else if !g.wouldCollide(p.X, newY) {
+				p.Y = newY
+			} else {
+				// Completely blocked
+				if p.IsDashing && p.Role == RoleSprinter {
+					p.IsDashing = false
+					p.DashRemainingTicks = 0
+					p.IsStunned = true
+					p.StunUntil = now.Add(StunSeconds * time.Second)
+				}
 			}
 		}
 
 		// Clamp to map bounds.
 		p.X = clamp(p.X, PlayerRadius, float64(g.mapWidth)-1-PlayerRadius)
 		p.Y = clamp(p.Y, PlayerRadius, float64(g.mapHeight)-1-PlayerRadius)
+
+		// Round to 3 decimal places for physical determinism
+		p.X = math.Round(p.X*1000.0) / 1000.0
+		p.Y = math.Round(p.Y*1000.0) / 1000.0
+
+		if p.X != startX || p.Y != startY {
+			log.Printf("[Server Physics] Player %s moved from (%f, %f) to (%f, %f)", p.ID, startX, startY, p.X, p.Y)
+		}
 	}
 
 	// --- 3. Invisibility expiration ---
@@ -807,7 +844,19 @@ func clamp(v, lo, hi float64) float64 {
 func (g *Game) broadcastGameStateLocked(now time.Time) {
 	for _, p := range g.players {
 		payload := g.buildStateForLocked(p, now)
-		p.Client.SendJSON(payload)
+		sentUDP := false
+		if p.Client.UDPAddr != nil && p.Client.hub.UDPConn != nil {
+			data, err := json.Marshal(payload)
+			if err == nil {
+				_, err = p.Client.hub.UDPConn.WriteToUDP(data, p.Client.UDPAddr)
+				if err == nil {
+					sentUDP = true
+				}
+			}
+		}
+		if !sentUDP || !p.Client.UDPConfirmed {
+			p.Client.SendJSON(payload)
+		}
 	}
 }
 
@@ -845,12 +894,20 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 		entities = append(entities, e)
 	}
 
-	// --- Visible tiles (squared vision window, then circular cull) ---
-	r := int(viewRadius) + 1
+	// --- Visible tiles — DELTA COMPRESSION ---
+	// Only send tiles that changed since the last time we sent them to this player.
+	// Full resync every 30 ticks (1 second) to correct any drift.
+	fullSync := (g.tick % 30) == 0
+	r := int(viewRadius) + 8
+	vrSq := (viewRadius + 8.0) * (viewRadius + 8.0) // send a 8-tile pre-cache buffer to prevent client lag
 	px, py := int(math.Round(viewX)), int(math.Round(viewY))
+
+	// Track which tiles are currently visible (to prune stale cache entries).
+	visibleKeys := make(map[int]struct{}, (2*r+1)*(2*r+1))
+
 	for dy := -r; dy <= r; dy++ {
 		for dx := -r; dx <= r; dx++ {
-			if math.Sqrt(float64(dx*dx+dy*dy)) > viewRadius {
+			if float64(dx*dx+dy*dy) > vrSq {
 				continue
 			}
 			tx, ty := px+dx, py+dy
@@ -866,7 +923,23 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 			if (tileType == TileCherry || tileType == TileChest) && p.Role != RolePacman {
 				tileType = TileEmpty
 			}
-			tiles = append(tiles, TileUpdate{X: tx, Y: ty, T: tileType})
+
+			key := ty*g.mapWidth + tx
+			visibleKeys[key] = struct{}{}
+
+			// Delta: only send if changed or full sync.
+			prev, known := p.LastSentTiles[key]
+			if fullSync || !known || prev != tileType {
+				tiles = append(tiles, TileUpdate{X: tx, Y: ty, T: tileType})
+				p.LastSentTiles[key] = tileType
+			}
+		}
+	}
+
+	// Prune tiles that left the vision radius (so re-entering triggers a resend).
+	for key := range p.LastSentTiles {
+		if _, still := visibleKeys[key]; !still {
+			delete(p.LastSentTiles, key)
 		}
 	}
 
@@ -954,6 +1027,8 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 			CherryDirAngle:  cherryAngle,
 			TrackerDirAngle: trackerAngle,
 			SpectatingID:    p.SpectatingID,
+			IsDashing:       p.IsDashing,
+			DashRemainingTicks: p.DashRemainingTicks,
 		},
 		LastSeq: p.LastSeq,
 	}

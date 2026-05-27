@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -29,13 +30,13 @@ func generateID() string {
 // Client wraps a WebSocket connection for a single player.
 // It owns two goroutines: ReadPump and WritePump.
 type Client struct {
-	ID     string
-	RoomID string
-	hub    *Hub
-	conn   *websocket.Conn
-	// Send is a buffered channel of outgoing JSON messages.
-	// WritePump drains it; capacity 128 covers one full game-state broadcast burst.
-	Send chan []byte
+	ID           string
+	RoomID       string
+	hub          *Hub
+	conn         *websocket.Conn
+	Send         chan []byte
+	UDPAddr      *net.UDPAddr
+	UDPConfirmed bool
 }
 
 func NewClient(hub *Hub, conn *websocket.Conn, roomID string) *Client {
@@ -104,8 +105,28 @@ func (c *Client) WritePump() {
 				c.conn.WriteMessage(websocket.CloseMessage, []byte{})
 				return
 			}
-			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+			w, err := c.conn.NextWriter(websocket.TextMessage)
+			if err != nil {
 				return
+			}
+			w.Write(msg)
+			if err := w.Close(); err != nil {
+				return
+			}
+
+			// Coalesce: drain any additional queued messages as individual frames.
+			// This reduces TCP overhead when the server tick produces
+			// multiple messages faster than the socket can flush.
+			n := len(c.Send)
+			for i := 0; i < n; i++ {
+				extra, ok := <-c.Send
+				if !ok {
+					return
+				}
+				c.conn.SetWriteDeadline(time.Now().Add(writeWait))
+				if err := c.conn.WriteMessage(websocket.TextMessage, extra); err != nil {
+					return
+				}
 			}
 
 		case <-ticker.C:

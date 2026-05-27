@@ -2,7 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"sync"
 
@@ -10,13 +13,19 @@ import (
 )
 
 var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+	ReadBufferSize:    4096,
+	WriteBufferSize:   8192,
+	EnableCompression: true,
 	// Accept all origins during development.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
+var GlobalUDPPort int = 9124
+
 func main() {
+	env := flag.String("env", "prod", "Environment: dev or prod")
+	flag.Parse()
+
 	hub := NewHub()
 
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
@@ -46,11 +55,27 @@ func main() {
 		json.NewEncoder(w).Encode(rooms)
 	})
 
-	log.Println("🎮 MultiPacMan server starting on ")
-	log.Println("   WebSocket : wss://pacman.yulian-server.duckdns.org/ws?room=<roomID>")
-	log.Println("   Health    : http://pacman.yulian-server.duckdns.org/health")
-	log.Println("   Rooms     : http://pacman.yulian-server.duckdns.org/rooms")
-	log.Fatal(http.ListenAndServe("", nil))
+	port := ":9123"
+	wsURL := "wss://pacman.yulian-server.duckdns.org/ws?room=<roomID>"
+	healthURL := "http://pacman.yulian-server.duckdns.org/health"
+	roomsURL := "http://pacman.yulian-server.duckdns.org/rooms"
+
+	if *env == "dev" {
+		port = ":8080"
+		GlobalUDPPort = 8081
+		wsURL = "ws://localhost:8080/ws?room=<roomID>"
+		healthURL = "http://localhost:8080/health"
+		roomsURL = "http://localhost:8080/rooms"
+	}
+
+	log.Printf("🎮 MultiPacMan server starting in %s mode on %s", *env, port)
+	log.Printf("   WebSocket : %s", wsURL)
+	log.Printf("   Health    : %s", healthURL)
+	log.Printf("   Rooms     : %s", roomsURL)
+
+	go startUDPServer(hub, GlobalUDPPort)
+
+	log.Fatal(http.ListenAndServe(port, nil))
 }
 
 // Hub manages all active game rooms.
@@ -59,6 +84,7 @@ type Hub struct {
 	rooms      map[string]*Game
 	Register   chan *Client
 	Unregister chan *Client
+	UDPConn    *net.UDPConn
 }
 
 func NewHub() *Hub {
@@ -140,4 +166,66 @@ func (h *Hub) GetRoomsSummary() []RoomSummaryPayload {
 		})
 	}
 	return out
+}
+
+func startUDPServer(hub *Hub, udpPort int) {
+	addr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", udpPort))
+	if err != nil {
+		log.Fatalf("UDP ResolveAddr error: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		log.Fatalf("UDP Listen error: %v", err)
+	}
+	defer conn.Close()
+	log.Printf("   UDP Port  : %d", udpPort)
+
+	hub.UDPConn = conn
+
+	buf := make([]byte, 2048)
+	for {
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			log.Printf("UDP Read error: %v", err)
+			continue
+		}
+
+		var payload UDPInput
+		if err := json.Unmarshal(buf[:n], &payload); err != nil {
+			log.Printf("UDP Unmarshal error: %v, raw data: %s", err, string(buf[:n]))
+			continue
+		}
+
+		if payload.DirX != 0.0 || payload.DirY != 0.0 || payload.Dash {
+			log.Printf("[UDP Server] Received non-zero input from %s: seq=%d, dir=(%f, %f), dash=%v", payload.ClientID, payload.Seq, payload.DirX, payload.DirY, payload.Dash)
+		}
+
+		hub.mu.Lock()
+		clientFound := false
+		for _, room := range hub.rooms {
+			room.mu.Lock()
+			if c, ok := room.clients[payload.ClientID]; ok {
+				c.UDPAddr = remoteAddr
+				clientFound = true
+
+				if room.state == StatePlaying {
+					existing, ok := room.inputQueue[payload.ClientID]
+					if !ok || payload.Seq > existing.Seq {
+						room.inputQueue[payload.ClientID] = IncomingMsg{
+							Type: MsgTypeInput,
+							Seq:  payload.Seq,
+							DirX: payload.DirX,
+							DirY: payload.DirY,
+							Dash: payload.Dash,
+						}
+					}
+				}
+			}
+			room.mu.Unlock()
+			if clientFound {
+				break
+			}
+		}
+		hub.mu.Unlock()
+	}
 }

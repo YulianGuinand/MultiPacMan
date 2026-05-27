@@ -17,7 +17,7 @@ import logging
 
 import pyxel
 
-from state import GameState
+from state import GameState, SPEEDS_30HZ, DEFAULT_SPEED_30HZ
 from network import NetworkManager
 from input_handler import InputHandler
 from renderer import Renderer, SCREEN_W, SCREEN_H
@@ -34,13 +34,7 @@ logging.basicConfig(
 _FPS = 60
 _SEND_EVERY = 2  # frames between network sends  (60 / 2 = 30 Hz)
 
-_PREDICT_SPEED: dict[str, float] = {
-    "PACMAN":         0.075,  # 0.150 / 2
-    "GHOST_TRACKER":  0.055,  # 0.110 / 2
-    "GHOST_BUILDER":  0.054,  # 0.107 / 2
-    "GHOST_SPRINTER": 0.067,  # 0.133 / 2
-}
-_DEFAULT_SPEED = 0.065  # 0.130 / 2
+# Speed values are imported directly from state.SPEEDS_30HZ to match the server.
 
 
 class App:
@@ -92,11 +86,23 @@ class App:
         # Process keyboard → conditionally send to network.
         dir_x, dir_y = self.input_handler.update(snap, should_send=should_send)
 
-        # Client-side prediction at 60 fps: move local sprite every frame
-        # without waiting for server confirmation.
-        if snap["room_state"] == "PLAYING" and (dir_x != 0.0 or dir_y != 0.0):
-            speed = _PREDICT_SPEED.get(snap["status"].role, _DEFAULT_SPEED)
-            self.state.apply_local_prediction(dir_x, dir_y, speed)
+        # Client-side prediction at 30 Hz (network frames): move local sprite
+        # using the exact inputs sent to the server.
+        if snap["room_state"] == "PLAYING" and should_send:
+            is_dashing = snap["status"].dash_remaining_ticks > 0 or snap["status"].is_dashing
+            if is_dashing or (dir_x != 0.0 or dir_y != 0.0):
+                if is_dashing:
+                    speed = 0.350  # SpeedDash
+                else:
+                    speed = SPEEDS_30HZ.get(snap["status"].role, DEFAULT_SPEED_30HZ)
+                self.state.apply_local_prediction(dir_x, dir_y, speed)
+
+        # Advance entity interpolation: 60fps render / 30Hz network = 2 frames per tick.
+        # Each frame adds 0.5 to interp_t, clamped to 1.0.
+        if snap["room_state"] == "PLAYING":
+            with self.state._lock:
+                self.state.interp_t = min(1.0, self.state.interp_t + 0.5)
+                self.state.local_interp_t = min(1.0, self.state.local_interp_t + 0.5)
 
     def draw(self) -> None:
         self.renderer.draw()
@@ -111,10 +117,16 @@ def parse_args() -> argparse.Namespace:
         description="MultiPacMan — asymmetric multiplayer Pac-Man client",
     )
     parser.add_argument(
+        "--env",
+        choices=["dev", "prod"],
+        default="prod",
+        help="Environment to use (default: prod)",
+    )
+    parser.add_argument(
         "--server",
-        default="wss://pacman.yulian-server.duckdns.org/ws",
+        default=None,
         metavar="URL",
-        help="WebSocket server URL (default: wss://pacman.yulian-server.duckdns.org/ws)",
+        help="WebSocket server URL (overrides environment default)",
     )
     parser.add_argument(
         "--room",
@@ -122,7 +134,13 @@ def parse_args() -> argparse.Namespace:
         metavar="ID",
         help="Room ID to join (default: 'default')",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.server is None:
+        if args.env == "dev":
+            args.server = "ws://localhost:8080/ws"
+        else:
+            args.server = "wss://pacman.yulian-server.duckdns.org/ws"
+    return args
 
 
 if __name__ == "__main__":

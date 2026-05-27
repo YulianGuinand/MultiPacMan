@@ -123,6 +123,20 @@ class InputHandler:
                 "dir_y": round(dir_y, 4),
                 "dash": dash,
             })
+            
+            # Record sent inputs for server reconciliation
+            self.state.pending_inputs.append({
+                "seq": self._seq,
+                "dir_x": round(dir_x, 4),
+                "dir_y": round(dir_y, 4),
+            })
+            
+            if dash and snap.get("status") and snap["status"].role == "GHOST_SPRINTER":
+                self.state.status.is_dashing = True
+                length = (dir_x * dir_x + dir_y * dir_y) ** 0.5
+                if length > 0:
+                    self.state.dash_dir_x = dir_x / length
+                    self.state.dash_dir_y = dir_y / length
 
         return dir_x, dir_y
 

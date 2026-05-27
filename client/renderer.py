@@ -64,6 +64,14 @@ C_INVIS_TEXT = 13  # Indigo — invisibility HUD text
 C_DEAD_TEXT  = 8   # Red — death text
 C_LIVES      = 8   # Red — lives heart
 
+# Vision radii in tiles matching server
+VISION_RADII = {
+    "PACMAN": 15.0,
+    "GHOST_TRACKER": 9.0,
+    "GHOST_BUILDER": 6.0,
+    "GHOST_SPRINTER": 12.0,
+}
+
 
 class Renderer:
     """Stateful renderer; call draw() once per Pyxel frame."""
@@ -170,15 +178,27 @@ class Renderer:
         local_id = snap["local_id"]
         role = status.role
 
-        # If dead and spectating, use spectated player's position for camera.
+        # Determine viewpoint position (interpolated)
         if status.is_dead and status.spectating_id:
             spectated = snap["players"].get(status.spectating_id)
             if spectated:
-                pred_x = spectated.x
-                pred_y = spectated.y
+                prev = snap["prev_players"].get(status.spectating_id)
+                if prev is not None:
+                    display_x = prev.x + (spectated.x - prev.x) * snap["interp_t"]
+                    display_y = prev.y + (spectated.y - prev.y) * snap["interp_t"]
+                else:
+                    display_x, display_y = spectated.x, spectated.y
+            else:
+                display_x, display_y = pred_x, pred_y
+        else:
+            local_interp_t = snap.get("local_interp_t", 1.0)
+            prev_x = snap.get("prev_predicted_x", pred_x)
+            prev_y = snap.get("prev_predicted_y", pred_y)
+            display_x = prev_x + (pred_x - prev_x) * local_interp_t
+            display_y = prev_y + (pred_y - prev_y) * local_interp_t
 
-        self._update_camera(pred_x, pred_y)
-        self._draw_tiles(snap["tile_cache"])
+        self._update_camera(display_x, display_y)
+        self._draw_tiles(snap, display_x, display_y)
         self._draw_cherries(snap["cherries"])
         self._draw_chests(snap["chests"])
         self._draw_footprints(snap["footprints"])
@@ -186,9 +206,9 @@ class Renderer:
 
         # Draw self sprite (unless dead)
         if not status.is_dead:
-            self._draw_self(pred_x, pred_y, role, status.stunned, status.is_invisible)
+            self._draw_self(display_x, display_y, role, status.stunned, status.is_invisible)
             # Draw directional indicators around self
-            sx, sy = self._world_to_screen(pred_x, pred_y)
+            sx, sy = self._world_to_screen(display_x, display_y)
             if role == "PACMAN":
                 self._draw_direction_indicator(sx, sy, status.cherry_dir_angle, C_INDICATOR)
             elif role == "GHOST_TRACKER":
@@ -291,13 +311,32 @@ class Renderer:
             round(wy * TILE_SIZE - self._cam_y),
         )
 
-    def _draw_tiles(self, tile_cache: dict) -> None:
+    def _draw_tiles(self, snap: dict, view_x: float, view_y: float) -> None:
+        tile_cache = snap["tile_cache"]
+        status = snap["status"]
+        role = status.role
+        
+        if status.is_dead and status.spectating_id:
+            spectated = snap["players"].get(status.spectating_id)
+            if spectated:
+                role = spectated.revealed_role or "GHOST_TRACKER"
+                
+        vision_radius = VISION_RADII.get(role, 9.0)
+        vr_sq = vision_radius * vision_radius
+
         for (tx, ty), tile_type in tile_cache.items():
             sx = round(tx * TILE_SIZE - self._cam_x)
             sy = round(ty * TILE_SIZE - self._cam_y)
             # Frustum cull.
             if sx < -TILE_SIZE or sx >= SCREEN_W or sy < -TILE_SIZE or sy >= GAME_H:
                 continue
+                
+            # Fog of War check: only draw currently visible tiles
+            dx = (tx + 0.5) - view_x
+            dy = (ty + 0.5) - view_y
+            if (dx * dx + dy * dy) > vr_sq:
+                continue
+                
             self._draw_tile(sx, sy, tile_type)
 
     def _draw_tile(self, sx: int, sy: int, tile_type: int) -> None:
@@ -413,11 +452,23 @@ class Renderer:
     # -----------------------------------------------------------------------
 
     def _draw_other_players(self, snap: dict, local_id: str | None) -> None:
+        interp_t = snap.get("interp_t", 1.0)
+        prev_players = snap.get("prev_players", {})
+
         for pid, player in snap["players"].items():
             if pid == local_id:
                 continue
-            sx, sy = self._world_to_screen(player.x, player.y)
-            if not (0 <= sx < SCREEN_W and 0 <= sy < GAME_H):
+
+            # Interpolate from previous position to current.
+            prev = prev_players.get(pid)
+            if prev is not None:
+                draw_x = prev.x + (player.x - prev.x) * interp_t
+                draw_y = prev.y + (player.y - prev.y) * interp_t
+            else:
+                draw_x, draw_y = player.x, player.y
+
+            sx, sy = self._world_to_screen(draw_x, draw_y)
+            if not (-8 <= sx < SCREEN_W + 8 and -8 <= sy < GAME_H + 8):
                 continue
             revealed = player.revealed_role
             if revealed == "PACMAN":
