@@ -70,7 +70,10 @@ class NetworkManager:
     def send(self, msg: dict) -> None:
         """Enqueue a message to be sent over WebSocket (thread-safe)."""
         if self._loop and self._send_queue is not None:
-            self._loop.call_soon_threadsafe(self._send_queue.put_nowait, msg)
+            try:
+                self._loop.call_soon_threadsafe(self._send_queue.put_nowait, msg)
+            except RuntimeError as exc:
+                logger.error("Failed to enqueue message (event loop closed): %s", exc)
 
     # -----------------------------------------------------------------------
     # Internal — network thread
@@ -169,11 +172,10 @@ class NetworkManager:
                     except Exception as e:
                         logger.debug("Failed sending UDP input: %s", e)
                 
-                # Send to WebSocket if it's not an input, or if UDP is not confirmed yet, or if UDP send failed
-                if not is_input or not self.udp_confirmed or not sent_udp:
-                    await ws.send(json.dumps(msg))
-                    if is_input and (msg.get("dir_x") != 0.0 or msg.get("dir_y") != 0.0):
-                        logger.debug("Sending non-zero TCP input: %s", msg)
+                # Always send to WebSocket for 100% reliability
+                await ws.send(json.dumps(msg))
+                if is_input and (msg.get("dir_x") != 0.0 or msg.get("dir_y") != 0.0):
+                    logger.debug("Sending non-zero TCP input: %s", msg)
             except Exception as exc:
                 logger.error("Send error: %s", exc)
                 break

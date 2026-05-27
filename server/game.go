@@ -886,19 +886,14 @@ func clamp(v, lo, hi float64) float64 {
 func (g *Game) broadcastGameStateLocked(now time.Time) {
 	for _, p := range g.players {
 		payload := g.buildStateForLocked(p, now)
-		sentUDP := false
 		if p.Client.UDPAddr != nil && p.Client.hub.UDPConn != nil {
 			data, err := json.Marshal(payload)
 			if err == nil {
-				_, err = p.Client.hub.UDPConn.WriteToUDP(data, p.Client.UDPAddr)
-				if err == nil {
-					sentUDP = true
-				}
+				p.Client.hub.UDPConn.WriteToUDP(data, p.Client.UDPAddr)
 			}
 		}
-		if !sentUDP || !p.Client.UDPConfirmed {
-			p.Client.SendJSON(payload)
-		}
+		// Always send over TCP for reliability
+		p.Client.SendJSON(payload)
 	}
 }
 

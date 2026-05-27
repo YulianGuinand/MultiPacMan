@@ -174,7 +174,7 @@ class GameState:
         with self._lock:
             self.lobby_players = [
                 LobbyPlayerData(id=p["id"], ready=p["ready"])
-                for p in data.get("players", [])
+                for p in (data.get("players") or [])
             ]
             self.min_players = data.get("min_ready", 4)
             self.max_players = data.get("max_players", 12)
@@ -209,7 +209,7 @@ class GameState:
 
             # Players — store previous for interpolation
             new_players: dict[str, PlayerData] = {}
-            for p in data.get("players", []):
+            for p in (data.get("players") or []):
                 new_players[p["id"]] = PlayerData(
                     id=p["id"],
                     x=p["x"],
@@ -226,25 +226,25 @@ class GameState:
                 logging.getLogger("state").debug("Tick %d: players in state: %s", tick, [(p.id, p.x, p.y) for p in self.players.values()])
 
             # Tiles (apply deltas — server sends only changed tiles)
-            for t in data.get("tiles", []):
+            for t in (data.get("tiles") or []):
                 self.tile_cache[(t["x"], t["y"])] = t["t"]
 
             # Footprints (legacy — kept for compatibility)
             self.footprints = [
                 FootprintData(id=f["id"], x=f["x"], y=f["y"])
-                for f in data.get("footprints", [])
+                for f in (data.get("footprints") or [])
             ]
 
             # Cherries (Pacman only)
             self.cherries = [
                 CherryData(id=c["id"], x=c["x"], y=c["y"])
-                for c in data.get("cherries", [])
+                for c in (data.get("cherries") or [])
             ]
 
             # Chests (Pacman only)
             self.chests = [
                 ChestData(id=c["id"], x=c["x"], y=c["y"])
-                for c in data.get("chests", [])
+                for c in (data.get("chests") or [])
             ]
 
             # Status
