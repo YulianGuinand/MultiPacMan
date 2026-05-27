@@ -29,7 +29,7 @@ class NetworkManager:
     def __init__(
         self,
         state: GameState,
-        server_url: str = "ws://localhost:8080/ws",
+        server_url: str = "wss://pacman.yulian-server.duckdns.org/ws",
     ) -> None:
         self.state = state
         self.server_url = server_url

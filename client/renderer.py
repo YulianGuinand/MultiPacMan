@@ -106,7 +106,7 @@ class Renderer:
         msg = "Connecting to server"
         dots = "." * ((pyxel.frame_count // 8) % 4)
         self._ctext(msg + dots, SCREEN_W // 2, 100, C_HUD_DIM)
-        self._ctext("ws://localhost:8080", SCREEN_W // 2, 112, C_WAITING)
+        self._ctext("wss://pacman.yulian-server.duckdns.org", SCREEN_W // 2, 112, C_WAITING)
 
     # -----------------------------------------------------------------------
     # Lobby screen

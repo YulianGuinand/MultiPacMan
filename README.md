@@ -39,11 +39,11 @@ cd server
 go run .
 ```
 
-Le serveur écoute sur **:8080** :
+Le serveur écoute sur \*\*\*\* :
 
-- `ws://localhost:8080/ws?room=<roomID>` — WebSocket joueur
-- `http://localhost:8080/health` — healthcheck
-- `http://localhost:8080/rooms` — liste des rooms actives
+- `wss://pacman.yulian-server.duckdns.org/ws?room=<roomID>` — WebSocket joueur
+- `http://pacman.yulian-server.duckdns.org/health` — healthcheck
+- `http://pacman.yulian-server.duckdns.org/rooms` — liste des rooms actives
 
 ### 2. Client Python (autant de fois que nécessaire)
 
@@ -51,7 +51,7 @@ Le serveur écoute sur **:8080** :
 cd client
 uv run python main.py
 # Options :
-uv run python main.py --server ws://localhost:8080/ws --room maroom
+uv run python main.py --server wss://pacman.yulian-server.duckdns.org/ws --room maroom
 ```
 
 ---

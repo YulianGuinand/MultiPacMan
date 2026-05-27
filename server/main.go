@@ -46,11 +46,11 @@ func main() {
 		json.NewEncoder(w).Encode(rooms)
 	})
 
-	log.Println("🎮 MultiPacMan server starting on :8080")
-	log.Println("   WebSocket : ws://localhost:8080/ws?room=<roomID>")
-	log.Println("   Health    : http://localhost:8080/health")
-	log.Println("   Rooms     : http://localhost:8080/rooms")
-	log.Fatal(http.ListenAndServe(":8080", nil))
+	log.Println("🎮 MultiPacMan server starting on ")
+	log.Println("   WebSocket : wss://pacman.yulian-server.duckdns.org/ws?room=<roomID>")
+	log.Println("   Health    : http://pacman.yulian-server.duckdns.org/health")
+	log.Println("   Rooms     : http://pacman.yulian-server.duckdns.org/rooms")
+	log.Fatal(http.ListenAndServe("", nil))
 }
 
 // Hub manages all active game rooms.

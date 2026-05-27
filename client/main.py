@@ -2,7 +2,7 @@
 main.py — MultiPacMan client entry point.
 
 Usage:
-    uv run python main.py [--server ws://host:port/ws] [--room <room_id>]
+    uv run python main.py [--server wss://host:port/ws] [--room <room_id>]
 
 Architecture:
     Pyxel (60 fps render) ──► InputHandler ──► NetworkManager.send()  [30 Hz]
@@ -112,9 +112,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--server",
-        default="ws://localhost:8080/ws",
+        default="wss://pacman.yulian-server.duckdns.org/ws",
         metavar="URL",
-        help="WebSocket server URL (default: ws://localhost:8080/ws)",
+        help="WebSocket server URL (default: wss://pacman.yulian-server.duckdns.org/ws)",
     )
     parser.add_argument(
         "--room",
