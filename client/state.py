@@ -223,7 +223,7 @@ class GameState:
             # Periodic debugging log: once per second (30 ticks)
             if tick % 30 == 0:
                 import logging
-                logging.getLogger("state").info("Tick %d: players in state: %s", tick, [(p.id, p.x, p.y) for p in self.players.values()])
+                logging.getLogger("state").debug("Tick %d: players in state: %s", tick, [(p.id, p.x, p.y) for p in self.players.values()])
 
             # Tiles (apply deltas — server sends only changed tiles)
             for t in data.get("tiles", []):

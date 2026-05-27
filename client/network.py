@@ -162,7 +162,7 @@ class NetworkManager:
                             "dash": msg.get("dash", False),
                         }
                         if udp_payload["dir_x"] != 0.0 or udp_payload["dir_y"] != 0.0:
-                            logger.info("Sending non-zero UDP input: %s", udp_payload)
+                            logger.debug("Sending non-zero UDP input: %s", udp_payload)
                         data = json.dumps(udp_payload).encode("utf-8")
                         self._udp_sock.sendto(data, (self.server_host, self.state.udp_port))
                         sent_udp = True
@@ -173,7 +173,7 @@ class NetworkManager:
                 if not is_input or not self.udp_confirmed or not sent_udp:
                     await ws.send(json.dumps(msg))
                     if is_input and (msg.get("dir_x") != 0.0 or msg.get("dir_y") != 0.0):
-                        logger.info("Sending non-zero TCP input: %s", msg)
+                        logger.debug("Sending non-zero TCP input: %s", msg)
             except Exception as exc:
                 logger.error("Send error: %s", exc)
                 break

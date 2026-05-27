@@ -262,7 +262,7 @@ class Renderer:
             else:
                 # If builder_step is 0, the first click must be Empty (0)
                 # If builder_step is 1, the second click can be Empty (0) or Wall (1)
-                is_valid = (tile_type == 0) if builder_step == 0 else (tile_type in (0, 1))
+                is_valid = (tile_type in (0, 2)) if builder_step == 0 else (tile_type in (0, 1, 2))
                 col = 11 if is_valid else 8
 
             # Pulsing hover box outline
@@ -627,14 +627,21 @@ class Renderer:
             pyxel.text(bar_x + 12, bar_y + 7, "READY!", C_READY)
 
         # Mini controls reminder (very small, bottom-right corner)
-        pyxel.text(SCREEN_W - 88, hy + 22, "WASD+SPACE", C_HUD_DIM)
+        pyxel.text(SCREEN_W - 88, hy + 22, "ZQSD+SPACE", C_HUD_DIM)
+
+        # Room ID (bottom, next to invisibility / roles)
+        room_id = snap.get("room_id") or "…"
+        pyxel.text(75, hy + 22, f"ROOM: {room_id}", C_HUD_DIM)
 
     # -----------------------------------------------------------------------
     # Game over screen
     # -----------------------------------------------------------------------
 
     def _draw_game_over(self, snap: dict) -> None:
-        self._draw_title(SCREEN_W // 2, 20)
+        self._draw_title(SCREEN_W // 2, 14)
+
+        room_id = snap.get("room_id") or "…"
+        self._ctext(f"Room: {room_id}", SCREEN_W // 2, 26, C_HUD_DIM)
 
         winner = snap.get("winner", "?")
         w_col = C_SELF_PAC if winner == "PACMAN" else 12
@@ -656,6 +663,7 @@ class Renderer:
             col = C_SELF_PAC if is_self else C_OTHER
             pyxel.text(10, y, f"{prefix}{pid[:8]}  [{role_str}]  {score}", col)
 
+        self._ctext("Press SPACE to return to lobby", SCREEN_W // 2, SCREEN_H - 24, C_HUD_TEXT)
         self._ctext("Press ESCAPE to quit", SCREEN_W // 2, SCREEN_H - 12, C_HUD_DIM)
 
     # -----------------------------------------------------------------------

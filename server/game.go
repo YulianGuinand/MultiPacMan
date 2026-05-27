@@ -123,10 +123,20 @@ func NewGame(id string) *Game {
 	}
 }
 
-// Run is the goroutine launched by the Hub. It waits until the room closes.
+// Run is the goroutine launched by the Hub. It manages the 30 Hz tick loop until the room closes.
 func (g *Game) Run() {
-	<-g.done
-	log.Printf("[game %s] room closed", g.ID)
+	g.ticker = time.NewTicker(time.Second / TicksPerSec)
+	defer g.ticker.Stop()
+
+	for {
+		select {
+		case <-g.done:
+			log.Printf("[game %s] room closed", g.ID)
+			return
+		case <-g.ticker.C:
+			g.processTick()
+		}
+	}
 }
 
 // closeDone closes the done channel exactly once (safe to call multiple times).
@@ -157,21 +167,22 @@ func (g *Game) IsEmpty() bool {
 }
 
 // AddClient registers a new client into the room.
-// Returns false if the room is full or the game is finished.
+// Returns false if the room is full.
 func (g *Game) AddClient(c *Client) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
-	if len(g.clients) >= MaxPlayers || g.state == StateFinished {
+	if len(g.clients) >= MaxPlayers {
 		return false
 	}
 
 	g.clients[c.ID] = c
-	g.players[c.ID] = &Player{
+	p := &Player{
 		ID:            c.ID,
 		Client:        c,
 		LastSentTiles: make(map[int]int),
 	}
+	g.players[c.ID] = p
 
 	c.SendJSON(WelcomePayload{
 		Type:      MsgTypeWelcome,
@@ -181,7 +192,24 @@ func (g *Game) AddClient(c *Client) bool {
 		UDPPort:   GlobalUDPPort,
 	})
 
-	g.broadcastLobbyUpdateLocked()
+	if g.state == StatePlaying {
+		p.Role = RoleTracker
+		p.IsDead = true
+		p.SpectatingID = g.findFirstAliveGhostLocked()
+
+		c.SendJSON(GameStartPayload{
+			Type:      MsgTypeGameStart,
+			YourRole:  p.Role,
+			MapWidth:  g.mapWidth,
+			MapHeight: g.mapHeight,
+			SpawnX:    0.0,
+			SpawnY:    0.0,
+		})
+	}
+
+	if g.state != StatePlaying {
+		g.broadcastLobbyUpdateLocked()
+	}
 	return true
 }
 
@@ -246,7 +274,16 @@ func (g *Game) handleReady(clientID string) {
 	defer g.mu.Unlock()
 
 	p, ok := g.players[clientID]
-	if !ok || g.state != StateLobby {
+	if !ok {
+		return
+	}
+
+	if g.state == StateFinished {
+		g.resetToLobbyLocked()
+		return
+	}
+
+	if g.state != StateLobby {
 		return
 	}
 	p.Ready = true
@@ -378,19 +415,7 @@ func (g *Game) startGameLocked() {
 	log.Printf("[game %s] started — %d players, map %dx%d, %d pellets",
 		g.ID, n, g.mapWidth, g.mapHeight, g.totalPellets)
 
-	// Launch 30 Hz tick loop.
-	g.ticker = time.NewTicker(time.Second / TicksPerSec)
-	go func() {
-		for {
-			select {
-			case <-g.done:
-				g.ticker.Stop()
-				return
-			case <-g.ticker.C:
-				g.processTick()
-			}
-		}
-	}()
+
 }
 
 // =============================================================================
@@ -400,6 +425,10 @@ func (g *Game) startGameLocked() {
 func (g *Game) processTick() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+
+	if g.state != StatePlaying {
+		return
+	}
 
 	now := time.Now()
 	g.tick++
@@ -431,7 +460,7 @@ func (g *Game) processTick() {
 			continue
 		}
 
-		startX, startY := p.X, p.Y
+
 
 		// Clear expired stun.
 		if p.IsStunned && now.After(p.StunUntil) {
@@ -487,9 +516,7 @@ func (g *Game) processTick() {
 		p.X = math.Round(p.X*1000.0) / 1000.0
 		p.Y = math.Round(p.Y*1000.0) / 1000.0
 
-		if p.X != startX || p.Y != startY {
-			log.Printf("[Server Physics] Player %s moved from (%f, %f) to (%f, %f)", p.ID, startX, startY, p.X, p.Y)
-		}
+
 	}
 
 	// --- 3. Invisibility expiration ---
@@ -745,6 +772,21 @@ func (g *Game) findRandomFloorTileLocked() [2]int {
 // =============================================================================
 // Teammate finding (for spectation)
 // =============================================================================
+
+func (g *Game) findFirstAliveGhostLocked() string {
+	for _, other := range g.players {
+		if other.IsGhost() && !other.IsDead {
+			return other.ID
+		}
+	}
+	// Fallback to any ghost if none are alive
+	for _, other := range g.players {
+		if other.IsGhost() {
+			return other.ID
+		}
+	}
+	return ""
+}
 
 // findFirstAliveTeammateLocked returns the ID of any alive teammate (same team).
 func (g *Game) findFirstAliveTeammateLocked(p *Player) string {
@@ -1076,7 +1118,27 @@ func (g *Game) endGameLocked(winner string) {
 		c.SendJSON(payload)
 	}
 	log.Printf("[game %s] game over — winner: %s", g.ID, winner)
-	g.closeDone()
+}
+
+func (g *Game) resetToLobbyLocked() {
+	g.state = StateLobby
+	g.tick = 0
+	g.cherries = nil
+	g.chests = nil
+	g.inputQueue = make(map[string]IncomingMsg)
+
+	for _, p := range g.players {
+		p.Ready = false
+		p.IsDead = false
+		p.IsStunned = false
+		p.Score = 0
+		p.Lives = 0
+		p.IsInvisible = false
+		p.SpectatingID = ""
+		p.LastSentTiles = make(map[int]int)
+	}
+
+	g.broadcastLobbyUpdateLocked()
 }
 
 func (g *Game) handleBuild(clientID string, coords []int) {
@@ -1117,16 +1179,23 @@ func (g *Game) handleBuild(clientID string, coords []int) {
 	}
 
 	// 3. Vérification de la disponibilité :
-	// Le premier bloc doit être TileEmpty. Le second peut être TileEmpty ou TileWall.
-	if g.grid[y1][x1] != TileEmpty || (g.grid[y2][x2] != TileEmpty && g.grid[y2][x2] != TileWall) {
-		return // Zone occupée (autre qu'un mur permanent ou vide)
+	// Le premier bloc doit être TileEmpty ou TilePellet. Le second peut être TileEmpty, TilePellet ou TileWall.
+	if (g.grid[y1][x1] != TileEmpty && g.grid[y1][x1] != TilePellet) ||
+		(g.grid[y2][x2] != TileEmpty && g.grid[y2][x2] != TilePellet && g.grid[y2][x2] != TileWall) {
+		return // Zone occupée (autre qu'un mur permanent, vide, ou pellet)
 	}
 
 	// 4. Application
+	if g.grid[y1][x1] == TilePellet {
+		g.remainingPellets--
+	}
 	g.grid[y1][x1] = TileDestructibleWall
 
 	// On ne remplace pas un mur permanent par un mur destructible
-	if g.grid[y2][x2] == TileEmpty {
+	if g.grid[y2][x2] == TileEmpty || g.grid[y2][x2] == TilePellet {
+		if g.grid[y2][x2] == TilePellet {
+			g.remainingPellets--
+		}
 		g.grid[y2][x2] = TileDestructibleWall
 	}
 

@@ -196,9 +196,7 @@ func startUDPServer(hub *Hub, udpPort int) {
 			continue
 		}
 
-		if payload.DirX != 0.0 || payload.DirY != 0.0 || payload.Dash {
-			log.Printf("[UDP Server] Received non-zero input from %s: seq=%d, dir=(%f, %f), dash=%v", payload.ClientID, payload.Seq, payload.DirX, payload.DirY, payload.Dash)
-		}
+
 
 		hub.mu.Lock()
 		clientFound := false

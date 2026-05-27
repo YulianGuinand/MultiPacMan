@@ -141,8 +141,8 @@ class InputHandler:
         return dir_x, dir_y
 
     def _handle_finished(self) -> None:
-        # Placeholder: could reconnect or return to lobby.
-        pass
+        if pyxel.btnp(pyxel.KEY_SPACE) or pyxel.btnp(pyxel.KEY_RETURN):
+            self._send({"type": "READY"})
 
     def _handle_builder_clicks(self, status: GameStatus) -> None:
         # Cancel build selection on right click
@@ -160,10 +160,10 @@ class InputHandler:
                 return
 
             if self.state.builder_step == 0:
-                # Target tile must be empty (TileEmpty = 0)
+                # Target tile must be empty or pellet (TileEmpty = 0, TilePellet = 2)
                 tile_type = self.state.tile_cache.get((grid_x, grid_y))
-                if tile_type != 0:
-                    return # Must start building on an empty tile
+                if tile_type not in (0, 2):
+                    return # Must start building on an empty/pellet tile
 
                 self.state.builder_x1 = grid_x
                 self.state.builder_y1 = grid_y
@@ -185,9 +185,9 @@ class InputHandler:
                     x2 = self.state.builder_x1
                     y2 = self.state.builder_y1 + (1 if dy >= 0 else -1)
 
-                # Ensure second tile is empty (0) OR a permanent wall (1)
+                # Ensure second tile is empty (0), permanent wall (1), or pellet (2)
                 tile_type2 = self.state.tile_cache.get((x2, y2))
-                if tile_type2 not in (0, 1):
+                if tile_type2 not in (0, 1, 2):
                     return
 
                 # Send build message to server
