@@ -1,0 +1,12 @@
+[project]
+name = "multipacman-client"
+version = "0.1.0"
+description = "MultiPacMan - Asymmetric multiplayer Pac-Man game client"
+requires-python = ">=3.11"
+dependencies = [
+    "pyxel>=2.2.0",
+    "websockets>=12.0",
+]
+
+[tool.uv]
+package = false
