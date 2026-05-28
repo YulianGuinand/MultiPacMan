@@ -510,7 +510,32 @@ func (g *Game) processTick() {
 		newX := p.X + dirX*speed
 		newY := p.Y + dirY*speed
 
-		if p.IsPhasing || !g.wouldCollide(newX, newY) {
+		// Phaser can pass through normal walls but not builder walls
+		canMove := false
+		if p.IsPhasing {
+			// Check if destination has a destructible wall
+			txMin, txMax := int(math.Floor(newX-PlayerRadius)), int(math.Floor(newX+PlayerRadius))
+			tyMin, tyMax := int(math.Floor(newY-PlayerRadius)), int(math.Floor(newY+PlayerRadius))
+			blockedByBuilder := false
+			for ty := tyMin; ty <= tyMax; ty++ {
+				for tx := txMin; tx <= txMax; tx++ {
+					if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
+						if g.grid[ty][tx] == TileDestructibleWall {
+							blockedByBuilder = true
+							break
+						}
+					}
+				}
+				if blockedByBuilder {
+					break
+				}
+			}
+			canMove = !blockedByBuilder
+		} else {
+			canMove = !g.wouldCollide(newX, newY)
+		}
+
+		if canMove {
 			p.X = newX
 			p.Y = newY
 		} else {
