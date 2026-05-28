@@ -84,22 +84,22 @@ go run .
 
 ### Lancer le(s) client(s)
 
-**Depuis Python (développement) :**
+**Depuis Python (développement - toutes plateformes) :**
 
 ```powershell
 cd client
 
-# Serveur local (dev) - mode dev
-uv run python main.py --server localhost:8080 --room mygame
+# Serveur local (dev)
+uv run python main.py --host localhost --room mygame
 
-# Serveur réseau local - mode lan
-uv run python main.py --server 192.168.10.20:8080 --room mygame
+# Serveur réseau local
+uv run python main.py --host 192.168.10.20 --room mygame
 
-# Serveur distant (défaut) - mode prod
+# Serveur distant (défaut)
 uv run python main.py --room mygame
 ```
 
-**Depuis EXE compilé (production) :**
+**Windows - Depuis EXE compilé (production) :**
 
 ```powershell
 # Localhost
@@ -110,6 +110,28 @@ uv run python main.py --room mygame
 
 # Serveur distant (défaut)
 .\dist\client\client.exe --room mygame
+```
+
+**Linux/Mac - Depuis Pyxel (.pyxapp) :**
+
+```bash
+cd client
+
+# Localhost via variables d'environnement
+MULTIPACMAN_HOST="localhost" MULTIPACMAN_ROOM="1234" uv run pyxel play ./client.pyxapp
+
+# Réseau local
+MULTIPACMAN_HOST="192.168.10.20" MULTIPACMAN_ROOM="1234" uv run pyxel play ./client.pyxapp
+
+# Serveur distant (défaut)
+uv run pyxel play ./client.pyxapp
+```
+
+**Ou via ligne de commande (Linux/Mac) :**
+
+```bash
+cd client
+uv run python main.py --host localhost --room 1234
 ```
 
 ---
@@ -460,50 +482,48 @@ Phaser cooldown:   60_000 ms (1 min)
 
 ### Client
 
-**Lancer avec paramètres :**
+**Paramètres Python (tous OS) :**
 
 ```bash
-# Development mode (localhost)
-uv run python main.py --server ws://localhost:8080/ws --room myroom --env dev
-
-# LAN mode (IP locale)
-uv run python main.py --server ws://192.168.10.20:8080/ws --room myroom --env lan
-
-# Production (serveur distant)
-uv run python main.py --room myroom
-# Utilise l'URL par défaut : wss://pacman.yulian-server.duckdns.org/ws
+uv run python main.py [--host HOSTNAME] [--room ROOM_ID]
 ```
 
-**Options Python :**
+**Options :**
 
-```
---server URL   : URL WebSocket (défaut: wss://pacman.yulian-server.duckdns.org/ws)
---room ID      : ID room (défaut: "default")
---env ENV      : dev/lan/prod (affecte URL par défaut)
-```
+| Paramètre | Défaut      | Description                                         |
+| --------- | ----------- | --------------------------------------------------- |
+| `--host`  | None (prod) | Hostname/IP du serveur (localhost, IP locale, etc.) |
+| `--room`  | "default"   | ID de la room à rejoindre                           |
 
-**Paramètres EXE :**
+**Exemples :**
 
 ```bash
-# Défaut : prod distant
-client.exe
-
 # Localhost
-client.exe --host localhost --port 8080 --room game1
+uv run python main.py --host localhost --room game1
 
-# IP locale
-client.exe --host 192.168.10.20 --port 8080 --room game1
+# Réseau local
+uv run python main.py --host 192.168.10.20 --room game1
 
-# Serveur distant
-client.exe --host pacman.yulian-server.duckdns.org --room game1
+# Serveur distant (défaut)
+uv run python main.py --room game1
 ```
 
-| Paramètre  | Défaut                           | Description                       |
-| ---------- | -------------------------------- | --------------------------------- |
-| `--host`   | pacman.yulian-server.duckdns.org | Hostname/IP serveur               |
-| `--port`   | 443                              | Port WebSocket (443 = SSL/TLS)    |
-| `--room`   | random UUID                      | Room ID                           |
-| `--secure` | true (si port 443)               | Utiliser WSS (WebSocket Sécurisé) |
+**Windows - Paramètres EXE :**
+
+```powershell
+.\dist\client\client.exe [--host HOSTNAME] [--room ROOM_ID]
+```
+
+**Linux/Mac - Variables d'environnement pour .pyxapp :**
+
+```bash
+MULTIPACMAN_HOST="localhost" MULTIPACMAN_ROOM="1234" uv run pyxel play ./client.pyxapp
+```
+
+| Variable           | Défaut    | Description         |
+| ------------------ | --------- | ------------------- |
+| `MULTIPACMAN_HOST` | None      | Hostname/IP serveur |
+| `MULTIPACMAN_ROOM` | "default" | Room ID             |
 
 ---
 

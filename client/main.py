@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
+import sys
 
 import pyxel
 
@@ -118,15 +120,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--host",
-        default=None,
-        help="Host IP/domain of the MultiPacMan server (default: None, connects to production)",
+        default=os.getenv("MULTIPACMAN_HOST"),
+        help="Host IP/domain of the MultiPacMan server (default: env var MULTIPACMAN_HOST or production)",
     )
     parser.add_argument(
         "--room",
-        default="default",
+        default=os.getenv("MULTIPACMAN_ROOM", "default"),
         metavar="ID",
-        help="Room ID to join (default: 'default')",
+        help="Room ID to join (default: env var MULTIPACMAN_ROOM or 'default')",
     )
+    # Si le script est lancé via pyxel play, nettoyer sys.argv
+    # pour ne laisser que les arguments reconnus (commençant par "-")
+    sys.argv = [sys.argv[0]] + [arg for arg in sys.argv if arg.startswith("-")]
     return parser.parse_args()
 
 
