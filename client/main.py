@@ -117,16 +117,9 @@ def parse_args() -> argparse.Namespace:
         description="MultiPacMan — asymmetric multiplayer Pac-Man client",
     )
     parser.add_argument(
-        "--env",
-        choices=["dev", "prod"],
-        default="prod",
-        help="Environment to use (default: prod)",
-    )
-    parser.add_argument(
-        "--server",
+        "--host",
         default=None,
-        metavar="URL",
-        help="WebSocket server URL (overrides environment default)",
+        help="Host IP/domain of the MultiPacMan server (default: None, connects to production)",
     )
     parser.add_argument(
         "--room",
@@ -134,15 +127,16 @@ def parse_args() -> argparse.Namespace:
         metavar="ID",
         help="Room ID to join (default: 'default')",
     )
-    args = parser.parse_args()
-    if args.server is None:
-        if args.env == "dev":
-            args.server = "ws://localhost:8080/ws"
-        else:
-            args.server = "wss://pacman.yulian-server.duckdns.org/ws"
-    return args
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    App(server_url=args.server, room_id=args.room, env=args.env)
+    if args.host is None:
+        server_url = "wss://pacman.yulian-server.duckdns.org/ws"
+        env = "prod"
+    else:
+        server_url = f"ws://{args.host}:8080/ws"
+        env = "dev"
+    App(server_url=server_url, room_id=args.room, env=env)
+

@@ -23,7 +23,7 @@ var upgrader = websocket.Upgrader{
 var GlobalUDPPort int = 9124
 
 func main() {
-	env := flag.String("env", "prod", "Environment: dev or prod")
+	env := flag.String("env", "prod", "Environment: dev, lan, or prod")
 	flag.Parse()
 
 	hub := NewHub()
@@ -60,12 +60,19 @@ func main() {
 	healthURL := "http://pacman.yulian-server.duckdns.org/health"
 	roomsURL := "http://pacman.yulian-server.duckdns.org/rooms"
 
-	if *env == "dev" {
+	if *env == "dev" || *env == "lan" {
 		port = ":8080"
 		GlobalUDPPort = 8081
-		wsURL = "ws://localhost:8080/ws?room=<roomID>"
-		healthURL = "http://localhost:8080/health"
-		roomsURL = "http://localhost:8080/rooms"
+		if *env == "lan" {
+			localIP := getLocalIP()
+			wsURL = fmt.Sprintf("ws://%s:8080/ws?room=<roomID>", localIP)
+			healthURL = fmt.Sprintf("http://%s:8080/health", localIP)
+			roomsURL = fmt.Sprintf("http://%s:8080/rooms", localIP)
+		} else {
+			wsURL = "ws://localhost:8080/ws?room=<roomID>"
+			healthURL = "http://localhost:8080/health"
+			roomsURL = "http://localhost:8080/rooms"
+		}
 	}
 
 	log.Printf("🎮 MultiPacMan server starting in %s mode on %s", *env, port)
@@ -77,6 +84,22 @@ func main() {
 
 	log.Fatal(http.ListenAndServe(port, nil))
 }
+
+func getLocalIP() string {
+	addrs, err := net.InterfaceAddrs()
+	if err != nil {
+		return "127.0.0.1"
+	}
+	for _, address := range addrs {
+		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
+			if ipnet.IP.To4() != nil {
+				return ipnet.IP.String()
+			}
+		}
+	}
+	return "127.0.0.1"
+}
+
 
 // Hub manages all active game rooms.
 type Hub struct {
