@@ -40,9 +40,9 @@ _SEND_EVERY = 2  # frames between network sends  (60 / 2 = 30 Hz)
 class App:
     """Main application: wires together Pyxel, GameState, Network, and Renderer."""
 
-    def __init__(self, server_url: str, room_id: str) -> None:
+    def __init__(self, server_url: str, room_id: str, env: str = "prod") -> None:
         self.state = GameState()
-        self.network = NetworkManager(self.state, server_url)
+        self.network = NetworkManager(self.state, server_url, env=env)
         self.renderer = Renderer(self.state)
         self.input_handler = InputHandler(self.state, self.network.send)
         self._frame: int = 0  # tracks frames for send-rate control
@@ -145,4 +145,4 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    App(server_url=args.server, room_id=args.room)
+    App(server_url=args.server, room_id=args.room, env=args.env)

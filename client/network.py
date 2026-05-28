@@ -33,9 +33,11 @@ class NetworkManager:
         self,
         state: GameState,
         server_url: str = "wss://pacman.yulian-server.duckdns.org/ws",
+        env: str = "prod",
     ) -> None:
         self.state = state
         self.server_url = server_url
+        self.env = env
 
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._send_queue: Optional[asyncio.Queue] = None
@@ -43,6 +45,7 @@ class NetworkManager:
         self._running = False
         self._udp_sock: Optional[socket.socket] = None
         self.server_host = ""
+        self.resolved_udp_host = ""
         self.udp_confirmed = False
 
     # -----------------------------------------------------------------------
@@ -84,6 +87,20 @@ class NetworkManager:
         self.server_host = parsed.hostname or "127.0.0.1"
         if self.server_host == "localhost":
             self.server_host = "127.0.0.1"
+
+        # Pre-resolve the UDP host to an IP to avoid blocking DNS lookups during sendto
+        self.resolved_udp_host = self.server_host
+        if self.env == "prod":
+            try:
+                self.resolved_udp_host = socket.gethostbyname("yulian-server.duckdns.org")
+            except Exception as e:
+                logger.error("Failed to resolve yulian-server.duckdns.org for UDP: %s", e)
+                self.resolved_udp_host = "yulian-server.duckdns.org"
+        else:
+            try:
+                self.resolved_udp_host = socket.gethostbyname(self.server_host)
+            except Exception:
+                pass
 
         self._udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._udp_sock.bind(("", 0))
@@ -167,7 +184,9 @@ class NetworkManager:
                         if udp_payload["dir_x"] != 0.0 or udp_payload["dir_y"] != 0.0:
                             logger.debug("Sending non-zero UDP input: %s", udp_payload)
                         data = json.dumps(udp_payload).encode("utf-8")
-                        self._udp_sock.sendto(data, (self.server_host, self.state.udp_port))
+                        udp_host = self.resolved_udp_host
+                        udp_port = 9124 if self.env == "prod" else self.state.udp_port
+                        self._udp_sock.sendto(data, (udp_host, udp_port))
                         sent_udp = True
                     except Exception as e:
                         logger.debug("Failed sending UDP input: %s", e)
