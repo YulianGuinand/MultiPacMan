@@ -278,13 +278,13 @@ class GameState:
                 
                 # Filter out inputs already processed by the server
                 self.pending_inputs = [inp for inp in self.pending_inputs if inp["seq"] > self.last_seq]
-                
                 # Replay remaining pending inputs starting from authoritative server position
                 px, py = srv.x, srv.y
                 role = self.status.role
                 dash_ticks = self.status.dash_remaining_ticks
                 dash_dir_x = self.dash_dir_x
                 dash_dir_y = self.dash_dir_y
+                is_stunned = self.status.stunned
                 
                 for inp in self.pending_inputs:
                     if inp.get("dash", False) and role == "GHOST_SPRINTER":
@@ -295,13 +295,22 @@ class GameState:
                             dash_dir_x = dx / length
                             dash_dir_y = dy / length
 
-                    if self.status.stunned:
+                    if is_stunned:
                         speed = 0.0
                         dx, dy = inp["dir_x"], inp["dir_y"]
                     elif dash_ticks > 0:
                         speed = 0.350  # SpeedDash
                         dx, dy = dash_dir_x, dash_dir_y
-                        dash_ticks -= 1
+                        
+                        # Check if this dash step is completely blocked
+                        new_x = px + dx * speed
+                        new_y = py + dy * speed
+                        if self._would_collide(new_x, new_y) and self._would_collide(new_x, py) and self._would_collide(px, new_y):
+                            is_stunned = True
+                            dash_ticks = 0
+                            speed = 0.0
+                        else:
+                            dash_ticks -= 1
                     else:
                         speed = SPEEDS_30HZ.get(role, DEFAULT_SPEED_30HZ)
                         dx, dy = inp["dir_x"], inp["dir_y"]
@@ -310,6 +319,7 @@ class GameState:
                 # Write back reconciled dash states
                 self.status.dash_remaining_ticks = dash_ticks
                 self.status.is_dashing = (dash_ticks > 0)
+                self.status.stunned = is_stunned
                 self.dash_dir_x = dash_dir_x
                 self.dash_dir_y = dash_dir_y
                 
@@ -356,14 +366,30 @@ class GameState:
             if self.status.dash_remaining_ticks > 0:
                 dx = self.dash_dir_x
                 dy = self.dash_dir_y
-                self.status.dash_remaining_ticks -= 1
+                is_dash_step = True
             else:
                 dx = dir_x
                 dy = dir_y
+                is_dash_step = False
 
-            self.predicted_x, self.predicted_y = self._predict_step(
-                self.predicted_x, self.predicted_y, dx, dy, speed
-            )
+            # Check if this dash step is completely blocked
+            completely_blocked = False
+            if is_dash_step:
+                new_x = self.predicted_x + dx * speed
+                new_y = self.predicted_y + dy * speed
+                if self._would_collide(new_x, new_y) and self._would_collide(new_x, self.predicted_y) and self._would_collide(self.predicted_x, new_y):
+                    completely_blocked = True
+
+            if completely_blocked and self.status.role == "GHOST_SPRINTER":
+                self.status.dash_remaining_ticks = 0
+                self.status.is_dashing = False
+                self.status.stunned = True
+            else:
+                if is_dash_step:
+                    self.status.dash_remaining_ticks -= 1
+                self.predicted_x, self.predicted_y = self._predict_step(
+                    self.predicted_x, self.predicted_y, dx, dy, speed
+                )
 
             # Local client-side prediction of pellet, cherry, and chest eating for instant visual feedback
             if self.status.role == "PACMAN":

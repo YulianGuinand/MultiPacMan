@@ -89,7 +89,7 @@ class App:
         # Client-side prediction at 30 Hz (network frames): move local sprite
         # using the exact inputs sent to the server.
         if snap["room_state"] == "PLAYING" and should_send:
-            is_dashing = snap["status"].dash_remaining_ticks > 0 or snap["status"].is_dashing
+            is_dashing = snap["status"].dash_remaining_ticks > 0
             if is_dashing or (dir_x != 0.0 or dir_y != 0.0):
                 if is_dashing:
                     speed = 0.350  # SpeedDash
