@@ -5,14 +5,20 @@ import (
 	"time"
 )
 
-// GhostAbility is the interface implemented by all ghost class skills.
-type GhostAbility interface {
+// Ability is the interface implemented by all player active class skills (Ghosts or Pacmans).
+type Ability interface {
 	// UseAbility triggers the ability. Called from the tick loop with g.mu held.
 	UseAbility(game *Game, caster *Player)
 	// GetCooldownMs returns the cooldown duration in milliseconds.
 	GetCooldownMs() int
 	// IsReady reports whether the ability can be used right now.
 	IsReady(now time.Time) bool
+	// OnAssign is called when this role/ability is assigned to a player.
+	OnAssign(caster *Player, now time.Time)
+	// IsSpacebarTriggered returns true if the ability should be activated via spacebar.
+	IsSpacebarTriggered() bool
+	// SetUsed updates the ability's lastUsed timestamp.
+	SetUsed(now time.Time)
 }
 
 // =============================================================================
@@ -37,9 +43,22 @@ func (t *TrackerAbility) IsReady(now time.Time) bool {
 }
 
 func (t *TrackerAbility) UseAbility(g *Game, caster *Player) {
-	t.lastUsed = time.Now()
-	t.indicatorUntil = t.lastUsed.Add(TrackerIndicatorDurSec * time.Second)
-	caster.AbilityReady = t.lastUsed.Add(time.Duration(t.GetCooldownMs()) * time.Millisecond)
+	t.SetUsed(time.Now())
+}
+
+func (t *TrackerAbility) OnAssign(caster *Player, now time.Time) {
+	t.lastUsed = now
+	t.indicatorUntil = now
+	caster.AbilityReady = now.Add(time.Duration(t.GetCooldownMs()) * time.Millisecond)
+}
+
+func (t *TrackerAbility) IsSpacebarTriggered() bool {
+	return true
+}
+
+func (t *TrackerAbility) SetUsed(now time.Time) {
+	t.lastUsed = now
+	t.indicatorUntil = now.Add(TrackerIndicatorDurSec * time.Second)
 }
 
 // IsIndicatorActive returns true during the 30s active window after ability use.
@@ -70,6 +89,18 @@ func (b *BuilderAbility) UseAbility(g *Game, caster *Player) {
 	// Builder uses click-to-build via handleBuild instead of dash/space.
 }
 
+func (b *BuilderAbility) OnAssign(caster *Player, now time.Time) {
+	b.lastUsed = now
+	caster.AbilityReady = now.Add(time.Duration(b.GetCooldownMs()) * time.Millisecond)
+}
+
+func (b *BuilderAbility) IsSpacebarTriggered() bool {
+	return false
+}
+
+func (b *BuilderAbility) SetUsed(now time.Time) {
+	b.lastUsed = now
+}
 
 // =============================================================================
 // Sprint ability — Dash
@@ -91,8 +122,7 @@ func (s *SprintAbility) IsReady(now time.Time) bool {
 }
 
 func (s *SprintAbility) UseAbility(g *Game, caster *Player) {
-	s.lastUsed = time.Now()
-	caster.AbilityReady = s.lastUsed.Add(time.Duration(s.GetCooldownMs()) * time.Millisecond)
+	s.SetUsed(time.Now())
 
 	dirX, dirY := caster.DirX, caster.DirY
 	if dirX == 0 && dirY == 0 {
@@ -105,4 +135,17 @@ func (s *SprintAbility) UseAbility(g *Game, caster *Player) {
 	caster.DashRemainingTicks = 9
 	caster.DashDirX = dirX / length
 	caster.DashDirY = dirY / length
+}
+
+func (s *SprintAbility) OnAssign(caster *Player, now time.Time) {
+	s.lastUsed = now
+	caster.AbilityReady = now.Add(time.Duration(s.GetCooldownMs()) * time.Millisecond)
+}
+
+func (s *SprintAbility) IsSpacebarTriggered() bool {
+	return true
+}
+
+func (s *SprintAbility) SetUsed(now time.Time) {
+	s.lastUsed = now
 }

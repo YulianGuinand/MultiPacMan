@@ -36,8 +36,8 @@ type Player struct {
 	StunUntil time.Time
 	Score     int
 
-	// Ghost ability
-	Ability      GhostAbility
+	// Player ability
+	Ability      Ability
 	AbilityReady time.Time // next time the ability can be used
 
 	// Sprinter dash state
@@ -424,9 +424,9 @@ func (g *Game) startGameLocked() {
 
 func (g *Game) processTick() {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 
 	if g.state != StatePlaying {
+		g.mu.Unlock()
 		return
 	}
 
@@ -445,7 +445,7 @@ func (g *Game) processTick() {
 			p.DirY = input.DirY
 
 			// Activate ability.
-			if input.Dash && p.Ability != nil && p.Role != RoleBuilder && p.Ability.IsReady(now) {
+			if input.Dash && p.Ability != nil && p.Ability.IsSpacebarTriggered() && p.Ability.IsReady(now) {
 				p.Ability.UseAbility(g, p)
 				// Set AbilityReady so the cooldown bar updates immediately.
 				p.AbilityReady = now.Add(time.Duration(p.Ability.GetCooldownMs()) * time.Millisecond)
@@ -700,6 +700,7 @@ func (g *Game) processTick() {
 	// Pacmans win if all pellets are collected.
 	if g.remainingPellets <= 0 {
 		g.endGameLocked("PACMAN")
+		g.mu.Unlock()
 		return
 	}
 
@@ -707,6 +708,7 @@ func (g *Game) processTick() {
 	for _, p := range g.players {
 		if p.Role == RolePacman && p.Score >= 3000 {
 			g.endGameLocked("PACMAN")
+			g.mu.Unlock()
 			return
 		}
 	}
@@ -721,11 +723,26 @@ func (g *Game) processTick() {
 	}
 	if !pacmanAlive {
 		g.endGameLocked("GHOST")
+		g.mu.Unlock()
 		return
 	}
 
-	// --- 12. Broadcast per-player state ---
-	g.broadcastGameStateLocked(now)
+	// --- 12. Broadcast per-player state (outside of lock, parallelized) ---
+	payloads := make([]playerPayload, 0, len(g.players))
+	for _, p := range g.players {
+		payloads = append(payloads, playerPayload{
+			player:  p,
+			payload: g.buildStateForLocked(p, now),
+		})
+	}
+	g.mu.Unlock()
+
+	g.broadcastGameStateParallel(payloads)
+}
+
+type playerPayload struct {
+	player  *Player
+	payload GameStatePayload
 }
 
 // =============================================================================
@@ -883,34 +900,40 @@ func clamp(v, lo, hi float64) float64 {
 // State broadcast — per-player culling
 // =============================================================================
 
-func (g *Game) broadcastGameStateLocked(now time.Time) {
-	for _, p := range g.players {
-		payload := g.buildStateForLocked(p, now)
-		
-		sentTCP := false
-		if len(payload.Tiles) > 0 {
-			p.Client.SendJSON(payload)
-			sentTCP = true
-			// Clear tiles so they aren't sent over UDP (saves bandwidth, prevents fragmentation)
-			payload.Tiles = nil
-		}
+func (g *Game) broadcastGameStateParallel(payloads []playerPayload) {
+	var wg sync.WaitGroup
+	for _, pp := range payloads {
+		wg.Add(1)
+		go func(p *Player, payload GameStatePayload) {
+			defer wg.Done()
 
-		sentUDP := false
-		if p.Client.UDPAddr != nil && p.Client.hub.UDPConn != nil {
-			data, err := json.Marshal(payload)
-			if err == nil {
-				_, err = p.Client.hub.UDPConn.WriteToUDP(data, p.Client.UDPAddr)
+			sentTCP := false
+			if len(payload.Tiles) > 0 {
+				p.Client.SendJSON(payload)
+				sentTCP = true
+				// Clear tiles so they aren't sent over UDP (saves bandwidth, prevents fragmentation)
+				payload.Tiles = nil
+			}
+
+			sentUDP := false
+			if p.Client.UDPAddr != nil && p.Client.hub.UDPConn != nil {
+				data, err := json.Marshal(payload)
 				if err == nil {
-					sentUDP = true
+					_, err = p.Client.hub.UDPConn.WriteToUDP(data, p.Client.UDPAddr)
+					if err == nil {
+						sentUDP = true
+					}
 				}
 			}
-		}
-		// Only send over TCP if we haven't already sent this tick's payload over TCP,
-		// and UDP is not yet confirmed/active or UDP transmission failed.
-		if !sentTCP && (!p.Client.UDPConfirmed || !sentUDP) {
-			p.Client.SendJSON(payload)
-		}
+
+			// Only send over TCP if we haven't already sent this tick's payload over TCP,
+			// and UDP is not yet confirmed/active or UDP transmission failed.
+			if !sentTCP && (!p.Client.UDPConfirmed || !sentUDP) {
+				p.Client.SendJSON(payload)
+			}
+		}(pp.player, pp.payload)
 	}
+	wg.Wait()
 }
 
 func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
@@ -1210,9 +1233,9 @@ func (g *Game) handleBuild(clientID string, coords []int) {
 		g.grid[y2][x2] = TileDestructibleWall
 	}
 
-	// 5. Déclenchement du cooldown du Builder
-	if ba, ok := p.Ability.(*BuilderAbility); ok {
-		ba.lastUsed = now
+	// 5. Déclenchement du cooldown
+	if p.Ability != nil {
+		p.Ability.SetUsed(now)
 	}
 	p.AbilityReady = now.Add(time.Duration(p.Ability.GetCooldownMs()) * time.Millisecond)
 

@@ -105,6 +105,7 @@ func getLocalIP() string {
 type Hub struct {
 	mu         sync.RWMutex
 	rooms      map[string]*Game
+	clients    map[string]*Game // index mapping ClientID -> Game (room)
 	Register   chan *Client
 	Unregister chan *Client
 	UDPConn    *net.UDPConn
@@ -113,6 +114,7 @@ type Hub struct {
 func NewHub() *Hub {
 	h := &Hub{
 		rooms:      make(map[string]*Game),
+		clients:    make(map[string]*Game),
 		Register:   make(chan *Client, 32),
 		Unregister: make(chan *Client, 32),
 	}
@@ -155,6 +157,7 @@ func (h *Hub) handleRegister(c *Client) {
 		close(c.Send)
 		return
 	}
+	h.clients[c.ID] = room
 	log.Printf("[hub] Player %s joined room %q (total: %d)", c.ID, c.RoomID, room.PlayerCount())
 }
 
@@ -167,6 +170,7 @@ func (h *Hub) handleUnregister(c *Client) {
 		return
 	}
 	room.RemoveClient(c)
+	delete(h.clients, c.ID)
 	log.Printf("[hub] Player %s left room %q (remaining: %d)", c.ID, c.RoomID, room.PlayerCount())
 
 	if room.IsEmpty() {
@@ -205,48 +209,44 @@ func startUDPServer(hub *Hub, udpPort int) {
 
 	hub.UDPConn = conn
 
-	buf := make([]byte, 2048)
 	for {
+		buf := make([]byte, 2048)
 		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
 			log.Printf("UDP Read error: %v", err)
 			continue
 		}
 
-		var payload UDPInput
-		if err := json.Unmarshal(buf[:n], &payload); err != nil {
-			log.Printf("UDP Unmarshal error: %v, raw data: %s", err, string(buf[:n]))
-			continue
-		}
+		go func(data []byte, addr *net.UDPAddr) {
+			var payload UDPInput
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return
+			}
 
+			hub.mu.RLock()
+			room, clientFound := hub.clients[payload.ClientID]
+			hub.mu.RUnlock()
 
+			if clientFound {
+				room.mu.Lock()
+				if c, ok := room.clients[payload.ClientID]; ok {
+					c.UDPAddr = addr
 
-		hub.mu.Lock()
-		clientFound := false
-		for _, room := range hub.rooms {
-			room.mu.Lock()
-			if c, ok := room.clients[payload.ClientID]; ok {
-				c.UDPAddr = remoteAddr
-				clientFound = true
-
-				if room.state == StatePlaying {
-					existing, ok := room.inputQueue[payload.ClientID]
-					if !ok || payload.Seq > existing.Seq {
-						room.inputQueue[payload.ClientID] = IncomingMsg{
-							Type: MsgTypeInput,
-							Seq:  payload.Seq,
-							DirX: payload.DirX,
-							DirY: payload.DirY,
-							Dash: payload.Dash,
+					if room.state == StatePlaying {
+						existing, ok := room.inputQueue[payload.ClientID]
+						if !ok || payload.Seq > existing.Seq {
+							room.inputQueue[payload.ClientID] = IncomingMsg{
+								Type: MsgTypeInput,
+								Seq:  payload.Seq,
+								DirX: payload.DirX,
+								DirY: payload.DirY,
+								Dash: payload.Dash,
+							}
 						}
 					}
 				}
+				room.mu.Unlock()
 			}
-			room.mu.Unlock()
-			if clientFound {
-				break
-			}
-		}
-		hub.mu.Unlock()
+		}(buf[:n], remoteAddr)
 	}
 }

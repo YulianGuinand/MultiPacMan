@@ -9,13 +9,50 @@ import (
 	"time"
 )
 
-// =============================================================================
-// Role assignment
-// =============================================================================
+// RoleDefinition configures attributes and setup details for a specific player role.
+type RoleDefinition struct {
+	Role         string
+	Group        string // "PACMAN" or "GHOST"
+	VisionRadius float64
+	Speed        float64
+	NewAbility   func() Ability
+}
+
+// RoleRegistry defines configurations for all available roles in the game.
+var RoleRegistry = map[string]RoleDefinition{
+	RolePacman: {
+		Role:         RolePacman,
+		Group:        "PACMAN",
+		VisionRadius: VisionPacman,
+		Speed:        SpeedPacman,
+		NewAbility:   func() Ability { return nil },
+	},
+	RoleTracker: {
+		Role:         RoleTracker,
+		Group:        "GHOST",
+		VisionRadius: VisionTracker,
+		Speed:        SpeedTracker,
+		NewAbility:   func() Ability { return NewTrackerAbility() },
+	},
+	RoleBuilder: {
+		Role:         RoleBuilder,
+		Group:        "GHOST",
+		VisionRadius: VisionBuilder,
+		Speed:        SpeedBuilder,
+		NewAbility:   func() Ability { return NewBuilderAbility() },
+	},
+	RoleSprinter: {
+		Role:         RoleSprinter,
+		Group:        "GHOST",
+		VisionRadius: VisionSprinter,
+		Speed:        SpeedSprinter,
+		NewAbility:   func() Ability { return NewSprintAbility() },
+	},
+}
 
 // AssignRoles distributes roles to all players according to the formula:
 //   Pacmans P = max(1, N/4)
-//   Ghosts  F = N - P  (distributed round-robin: Tracker / Builder / Sprinter)
+//   Ghosts  F = N - P  (distributed round-robin from available GHOST roles)
 // It also sets per-player attributes (speed, vision radius, ability) and
 // assigns spread-out spawn positions to minimise immediate conflicts.
 func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight int) {
@@ -40,8 +77,13 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 	}
 	rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
 
-	// Ghost subclass rotation.
-	ghostRoles := []string{RoleTracker, RoleBuilder, RoleSprinter}
+	// Retrieve and shuffle ghost roles dynamically from the registry.
+	var ghostRoles []string
+	for r, def := range RoleRegistry {
+		if def.Group == "GHOST" {
+			ghostRoles = append(ghostRoles, r)
+		}
+	}
 	rng.Shuffle(len(ghostRoles), func(i, j int) { ghostRoles[i], ghostRoles[j] = ghostRoles[j], ghostRoles[i] })
 	ghostIdx := 0
 
@@ -51,39 +93,21 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 	for i, id := range ids {
 		p := players[id]
 
+		var def RoleDefinition
 		if i < pacmanCount {
-			p.Role = RolePacman
-			p.VisionRadius = VisionPacman
-			p.Speed = SpeedPacman
-			p.Ability = nil
+			def = RoleRegistry[RolePacman]
 		} else {
 			role := ghostRoles[ghostIdx%len(ghostRoles)]
 			ghostIdx++
-			p.Role = role
+			def = RoleRegistry[role]
+		}
 
-			switch role {
-			case RoleTracker:
-				p.VisionRadius = VisionTracker
-				p.Speed = SpeedTracker
-				ta := NewTrackerAbility()
-				ta.lastUsed = time.Now()
-				p.Ability = ta
-				p.AbilityReady = ta.lastUsed.Add(time.Duration(ta.GetCooldownMs()) * time.Millisecond)
-			case RoleBuilder:
-				p.VisionRadius = VisionBuilder
-				p.Speed = SpeedBuilder
-				ba := NewBuilderAbility()
-				ba.lastUsed = time.Now()
-				p.Ability = ba
-				p.AbilityReady = ba.lastUsed.Add(time.Duration(ba.GetCooldownMs()) * time.Millisecond)
-			case RoleSprinter:
-				p.VisionRadius = VisionSprinter
-				p.Speed = SpeedSprinter
-				sa := NewSprintAbility()
-				sa.lastUsed = time.Now()
-				p.Ability = sa
-				p.AbilityReady = sa.lastUsed.Add(time.Duration(sa.GetCooldownMs()) * time.Millisecond)
-			}
+		p.Role = def.Role
+		p.VisionRadius = def.VisionRadius
+		p.Speed = def.Speed
+		p.Ability = def.NewAbility()
+		if p.Ability != nil {
+			p.Ability.OnAssign(p, time.Now())
 		}
 
 		// Set spawn position.
