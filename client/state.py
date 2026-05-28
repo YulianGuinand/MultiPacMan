@@ -201,6 +201,11 @@ class GameState:
 
     def update_game_state(self, data: dict) -> None:
         with self._lock:
+            # Tiles (apply deltas — server sends only changed tiles)
+            # Process tiles before discarding packets to ensure reliable map updates are always registered
+            for t in (data.get("tiles") or []):
+                self.tile_cache[(t["x"], t["y"])] = t["t"]
+
             tick = data.get("tick", 0)
             if tick <= self.last_tick:
                 return  # Discard out-of-order or duplicate packets
@@ -225,9 +230,6 @@ class GameState:
                 import logging
                 logging.getLogger("state").debug("Tick %d: players in state: %s", tick, [(p.id, p.x, p.y) for p in self.players.values()])
 
-            # Tiles (apply deltas — server sends only changed tiles)
-            for t in (data.get("tiles") or []):
-                self.tile_cache[(t["x"], t["y"])] = t["t"]
 
             # Footprints (legacy — kept for compatibility)
             self.footprints = [

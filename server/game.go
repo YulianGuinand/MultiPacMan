@@ -886,6 +886,15 @@ func clamp(v, lo, hi float64) float64 {
 func (g *Game) broadcastGameStateLocked(now time.Time) {
 	for _, p := range g.players {
 		payload := g.buildStateForLocked(p, now)
+		
+		sentTCP := false
+		if len(payload.Tiles) > 0 {
+			p.Client.SendJSON(payload)
+			sentTCP = true
+			// Clear tiles so they aren't sent over UDP (saves bandwidth, prevents fragmentation)
+			payload.Tiles = nil
+		}
+
 		sentUDP := false
 		if p.Client.UDPAddr != nil && p.Client.hub.UDPConn != nil {
 			data, err := json.Marshal(payload)
@@ -896,8 +905,9 @@ func (g *Game) broadcastGameStateLocked(now time.Time) {
 				}
 			}
 		}
-		// Only send over TCP if UDP is not yet confirmed/active or UDP transmission failed
-		if !p.Client.UDPConfirmed || !sentUDP {
+		// Only send over TCP if we haven't already sent this tick's payload over TCP,
+		// and UDP is not yet confirmed/active or UDP transmission failed.
+		if !sentTCP && (!p.Client.UDPConfirmed || !sentUDP) {
 			p.Client.SendJSON(payload)
 		}
 	}
