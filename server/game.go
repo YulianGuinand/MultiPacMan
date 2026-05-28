@@ -95,7 +95,7 @@ type Game struct {
 
 	// Pellet tracking
 	totalPellets       int
-	remainingPellets    int
+	remainingPellets   int
 	trapIndicatorUntil time.Time
 
 	// Dynamically spawned items
@@ -420,7 +420,6 @@ func (g *Game) startGameLocked() {
 	log.Printf("[game %s] started — %d players, map %dx%d, %d pellets",
 		g.ID, n, g.mapWidth, g.mapHeight, g.totalPellets)
 
-
 }
 
 // =============================================================================
@@ -464,8 +463,6 @@ func (g *Game) processTick() {
 		if p.IsDead {
 			continue
 		}
-
-
 
 		// Clear expired stun.
 		if p.IsStunned && now.After(p.StunUntil) {
@@ -540,7 +537,6 @@ func (g *Game) processTick() {
 		// Round to 3 decimal places for physical determinism
 		p.X = math.Round(p.X*1000.0) / 1000.0
 		p.Y = math.Round(p.Y*1000.0) / 1000.0
-
 
 	}
 
@@ -1008,7 +1004,22 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 		if other.IsInvisible && other.ID != p.ID {
 			continue
 		}
-		e := EntityState{ID: other.ID, X: other.X, Y: other.Y}
+		// Phasing: players phasing through walls are hidden from others except themselves.
+		if other.IsPhasing && other.ID != p.ID {
+			tx := int(math.Floor(other.X))
+			ty := int(math.Floor(other.Y))
+			if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
+				if g.grid[ty][tx] == TileWall || g.grid[ty][tx] == TileDestructibleWall {
+					continue
+				}
+			}
+		}
+		e := EntityState{
+			ID: other.ID,
+			X:  other.X,
+			Y:  other.Y,
+			// Don't send IsPhasing or PhasingRemainingTicks to other players — hide ability state
+		}
 		entities = append(entities, e)
 	}
 
@@ -1045,8 +1056,11 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 				if tileType == TilePellet && !isPacman {
 					tileType = TileEmpty
 				}
-				// Anti-cheat: ghosts cannot see cherry/chest tiles.
-				if (tileType == TileCherry || tileType == TileChest) && !isPacman {
+				// Anti-cheat: ghosts cannot see cherry/chest tiles. Builder also cannot see chests.
+				if tileType == TileCherry && !isPacman {
+					tileType = TileEmpty
+				}
+				if tileType == TileChest && (!isPacman || p.Role == RoleBuilder) {
 					tileType = TileEmpty
 				}
 			}
@@ -1082,8 +1096,9 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 		}
 	}
 
-	// --- Chests (Pacman only) ---
-	if isPacman || (p.IsDead && isSpectatedPacman) {
+	// --- Chests (Pacman only, except Builder) ---
+	isBuilderSpectator := p.IsDead && spectatedPlayer.Role == RoleBuilder
+	if (isPacman || (p.IsDead && isSpectatedPacman)) && p.Role != RoleBuilder && !isBuilderSpectator {
 		for _, ch := range g.chests {
 			cx, cy := float64(ch.X)+0.5, float64(ch.Y)+0.5
 			if dist2D(viewX, viewY, cx, cy) <= viewRadius {
@@ -1149,20 +1164,20 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 		Cherries: visibleCherries,
 		Chests:   visibleChests,
 		Status: PlayerStatus{
-			Score:           p.Score,
-			Stunned:         p.IsStunned,
-			CooldownMs:      cooldownMs,
-			Role:            p.Role,
-			Lives:           p.Lives,
-			InvisCharges:    p.InvisCharges,
-			IsInvisible:     p.IsInvisible,
-			IsDead:          p.IsDead,
-			CherryDirAngle:  cherryAngle,
-			TrackerDirAngle: trackerAngle,
-			SpectatingID:    p.SpectatingID,
-			IsDashing:       p.IsDashing,
-			DashRemainingTicks: p.DashRemainingTicks,
-			IsPhasing:       p.IsPhasing,
+			Score:                 p.Score,
+			Stunned:               p.IsStunned,
+			CooldownMs:            cooldownMs,
+			Role:                  p.Role,
+			Lives:                 p.Lives,
+			InvisCharges:          p.InvisCharges,
+			IsInvisible:           p.IsInvisible,
+			IsDead:                p.IsDead,
+			CherryDirAngle:        cherryAngle,
+			TrackerDirAngle:       trackerAngle,
+			SpectatingID:          p.SpectatingID,
+			IsDashing:             p.IsDashing,
+			DashRemainingTicks:    p.DashRemainingTicks,
+			IsPhasing:             p.IsPhasing,
 			PhasingRemainingTicks: p.PhasingRemainingTicks,
 		},
 		LastSeq: p.LastSeq,

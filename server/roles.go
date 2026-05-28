@@ -91,43 +91,78 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 	}
 	rng.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
 
-	// Retrieve and shuffle ghost roles dynamically from the registry.
-	var ghostRoles []string
-	for r, def := range RoleRegistry {
-		if def.Group == "GHOST" {
-			ghostRoles = append(ghostRoles, r)
-		}
-	}
-	rng.Shuffle(len(ghostRoles), func(i, j int) { ghostRoles[i], ghostRoles[j] = ghostRoles[j], ghostRoles[i] })
-	ghostIdx := 0
-
 	// Find well-distributed spawn positions.
 	spawnPoints := findSpawnPoints(grid, mapWidth, mapHeight, n, rng)
+
+	currentTrapper := 0
+	currentTracker := 0
+	currentPhaser := 0
 
 	for i, id := range ids {
 		p := players[id]
 
 		var def RoleDefinition
-		// We distribute dynamic Pacman roles round-robin or default to PACMAN
-		// To support future Pacman classes, let's separate pacmans vs ghosts
 		if i < pacmanCount {
-			// Currently Pacmans can be Pacman or Builder.
-			// Let's do a simple alternating or round-robin for Pacmans!
-			// To keep it simple: if Builder is selected, we assign Builder, else Pacman.
-			// Let's collect available Pacman roles and alternate them.
-			var pacmanRoles []string
-			for r, d := range RoleRegistry {
-				if d.Group == "PACMAN" {
-					pacmanRoles = append(pacmanRoles, r)
+			// Pacman selection: 50% chance of RolePacman, 50% chance of RoleBuilder
+			var chosenRole string
+			if rng.Float64() < 0.5 {
+				chosenRole = RolePacman
+			} else {
+				chosenRole = RoleBuilder
+			}
+			def = RoleRegistry[chosenRole]
+		} else {
+			// Ghost selection: dynamic pool based on limits and weights
+			type weightedRole struct {
+				role   string
+				weight int
+			}
+			var pool []weightedRole
+
+			// Sprinter (default): always available
+			pool = append(pool, weightedRole{role: RoleSprinter, weight: 45})
+
+			// Trapper: max 2 (often)
+			if currentTrapper < 2 {
+				pool = append(pool, weightedRole{role: RoleTrapper, weight: 35})
+			}
+			// Tracker: max 2 (rare)
+			if currentTracker < 2 {
+				pool = append(pool, weightedRole{role: RoleTracker, weight: 15})
+			}
+			// Phaser: max 1 (most rare)
+			if currentPhaser < 1 {
+				pool = append(pool, weightedRole{role: RolePhaser, weight: 5})
+			}
+
+			// Choose from pool
+			totalWeight := 0
+			for _, wr := range pool {
+				totalWeight += wr.weight
+			}
+
+			roll := rng.Intn(totalWeight)
+			chosenRole := RoleSprinter
+			runningSum := 0
+			for _, wr := range pool {
+				runningSum += wr.weight
+				if roll < runningSum {
+					chosenRole = wr.role
+					break
 				}
 			}
-			// Assign pacman roles round-robin (Pacman first, then Builder etc)
-			role := pacmanRoles[i%len(pacmanRoles)]
-			def = RoleRegistry[role]
-		} else {
-			role := ghostRoles[ghostIdx%len(ghostRoles)]
-			ghostIdx++
-			def = RoleRegistry[role]
+
+			// Update counts
+			switch chosenRole {
+			case RoleTrapper:
+				currentTrapper++
+			case RoleTracker:
+				currentTracker++
+			case RolePhaser:
+				currentPhaser++
+			}
+
+			def = RoleRegistry[chosenRole]
 		}
 
 		p.Role = def.Role

@@ -181,10 +181,12 @@ type GameStartPayload struct {
 
 // EntityState represents any visible entity in the world payload.
 type EntityState struct {
-	ID           string  `json:"id"`
-	X            float64 `json:"x"`
-	Y            float64 `json:"y"`
-	RevealedRole string  `json:"revealed_role,omitempty"`
+	ID                    string  `json:"id"`
+	X                     float64 `json:"x"`
+	Y                     float64 `json:"y"`
+	RevealedRole          string  `json:"revealed_role,omitempty"`
+	IsPhasing             bool    `json:"is_phasing,omitempty"`
+	PhasingRemainingTicks int     `json:"phasing_remaining_ticks,omitempty"`
 }
 
 // TileUpdate represents a single tile in the visibility window.

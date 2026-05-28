@@ -208,7 +208,7 @@ class Renderer:
 
         # Draw self sprite (unless dead)
         if not status.is_dead:
-            self._draw_self(display_x, display_y, role, status.stunned, status.is_invisible)
+            self._draw_self(display_x, display_y, role, status.stunned, status.is_invisible, status.is_phasing, status.phasing_remaining_ticks)
             # Draw directional indicators around self
             sx, sy = self._world_to_screen(display_x, display_y)
             if role in ("PACMAN", "GHOST_BUILDER"):
@@ -479,7 +479,24 @@ class Renderer:
                 col = C_GHOST_REV
             else:
                 col = C_OTHER
-            pyxel.circ(sx, sy, PLAYER_R, col)
+
+            # Blinking logic for other players (phasing)
+            draw_circle = True
+            is_phasing = getattr(player, "is_phasing", False)
+            phasing_ticks = getattr(player, "phasing_remaining_ticks", 0)
+
+            if is_phasing:
+                if phasing_ticks <= 150 and (pyxel.frame_count // 4) % 2 == 0:
+                    draw_circle = False
+
+            if draw_circle:
+                pyxel.circ(sx, sy, PLAYER_R, col)
+
+            if is_phasing:
+                secs = math.ceil(phasing_ticks / 30)
+                col_cd = C_STUN if phasing_ticks <= 150 else C_HUD_TEXT
+                # Draw countdown above player sprite (approx offset y-8)
+                pyxel.text(sx - 4, sy - 8, f"{secs}s", col_cd)
 
     def _draw_self(
         self,
@@ -488,6 +505,8 @@ class Renderer:
         role: str,
         stunned: bool,
         invisible: bool = False,
+        is_phasing: bool = False,
+        phasing_ticks: int = 0,
     ) -> None:
         sx, sy = self._world_to_screen(px, py)
         if not (0 <= sx < SCREEN_W and 0 <= sy < GAME_H):
@@ -501,18 +520,27 @@ class Renderer:
                 return
             # When visible frame: draw in dim color.
             col = C_HUD_DIM
+            draw_circle = True
         elif stunned:
             # Flash red/white during stun.
             col = C_STUN if (pyxel.frame_count // 4) % 2 == 0 else 7
+            draw_circle = True
         elif role in ("PACMAN", "GHOST_BUILDER"):
             col = C_SELF_PAC
+            draw_circle = True
         else:
             col = C_SELF
+            draw_circle = True
 
-        # Filled circle.
-        pyxel.circ(sx, sy, PLAYER_R, col)
-        # Outer ring to distinguish from other players.
-        pyxel.circb(sx, sy, PLAYER_R + 2, 7)
+        if is_phasing and phasing_ticks <= 150:
+            if (pyxel.frame_count // 4) % 2 == 0:
+                draw_circle = False
+
+        if draw_circle:
+            # Filled circle.
+            pyxel.circ(sx, sy, PLAYER_R, col)
+            # Outer ring to distinguish from other players.
+            pyxel.circb(sx, sy, PLAYER_R + 2, 7)
 
         # Role label above the sprite.
         label = {
@@ -523,8 +551,16 @@ class Renderer:
             "GHOST_TRAPPER":  "TRP",
             "GHOST_PHASER":   "PHS",
         }.get(role, "?")
+
+        label_col = col
+        if is_phasing:
+            secs = math.ceil(phasing_ticks / 30)
+            label = f"{label} {secs}s"
+            if phasing_ticks <= 150:
+                label_col = C_STUN
+
         lx = sx - len(label) * 2
-        pyxel.text(lx, sy - 10, label, col)
+        pyxel.text(lx, sy - 10, label, label_col)
 
     # -----------------------------------------------------------------------
     # Death overlay

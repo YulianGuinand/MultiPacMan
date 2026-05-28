@@ -37,6 +37,8 @@ class PlayerData:
     x: float
     y: float
     revealed_role: Optional[str] = None
+    is_phasing: bool = False
+    phasing_remaining_ticks: int = 0
 
 
 @dataclass
@@ -162,6 +164,7 @@ class GameState:
 
         # --- Misc ---
         self.last_error: Optional[str] = None
+        self.recently_eaten: dict[tuple[int, int], int] = {}
 
     # -----------------------------------------------------------------------
     # Write methods (called from network thread)
@@ -211,11 +214,13 @@ class GameState:
             # Process tiles before discarding packets to ensure reliable map updates are always registered
             for t in (data.get("tiles") or []):
                 tx, ty, new_t = t["x"], t["y"], t["t"]
-                if new_t == self.TILE_PELLET and self.tile_cache.get((tx, ty)) == self.TILE_EMPTY:
+                if new_t == self.TILE_PELLET and (tx, ty) in self.recently_eaten:
                     continue
                 self.tile_cache[(tx, ty)] = new_t
 
             tick = data.get("tick", 0)
+            self.recently_eaten = {k: t for k, t in self.recently_eaten.items() if tick - t < 60}
+
             if tick <= self.last_tick:
                 return  # Discard out-of-order or duplicate packets
             self.last_tick = tick
@@ -229,6 +234,8 @@ class GameState:
                     x=p["x"],
                     y=p["y"],
                     revealed_role=p.get("revealed_role"),
+                    is_phasing=p.get("is_phasing", False),
+                    phasing_remaining_ticks=p.get("phasing_remaining_ticks", 0),
                 )
             self.prev_players = dict(self.players)  # snapshot current as previous
             self.players = new_players
@@ -424,6 +431,7 @@ class GameState:
                     for tx in range(x_min, x_max + 1):
                         if self.tile_cache.get((tx, ty)) == self.TILE_PELLET:
                             self.tile_cache[(tx, ty)] = self.TILE_EMPTY
+                            self.recently_eaten[(tx, ty)] = self.last_tick
 
                 # Cherries
                 remaining_cherries = []

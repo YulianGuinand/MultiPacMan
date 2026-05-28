@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "MultiPacMan - Asymmetric multiplayer Pac-Man game client"
 requires-python = ">=3.11"
 dependencies = [
+    "pyinstaller>=6.20.0",
     "pyxel>=2.2.0",
     "websockets>=12.0",
 ]
