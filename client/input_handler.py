@@ -129,10 +129,12 @@ class InputHandler:
                 "seq": self._seq,
                 "dir_x": round(dir_x, 4),
                 "dir_y": round(dir_y, 4),
+                "dash": dash,
             })
             
             if dash and snap.get("status") and snap["status"].role == "GHOST_SPRINTER":
                 self.state.status.is_dashing = True
+                self.state.status.dash_remaining_ticks = 9
                 length = (dir_x * dir_x + dir_y * dir_y) ** 0.5
                 if length > 0:
                     self.state.dash_dir_x = dir_x / length

@@ -125,6 +125,7 @@ class GameState:
         self.chests: list[ChestData] = []
         # tile_cache: (x, y) → tile_type — additive, tiles stay until overridden
         self.tile_cache: dict[tuple[int, int], int] = {}
+        self.collected_items: set[str] = set()
         self.pending_inputs: list[dict] = []
         self.status: GameStatus = GameStatus()
         self.map_width: int = 0
@@ -187,6 +188,7 @@ class GameState:
             self.map_width = data["map_width"]
             self.map_height = data["map_height"]
             self.tile_cache.clear()
+            self.collected_items.clear()
             sx, sy = data["spawn_x"], data["spawn_y"]
             self.predicted_x = sx
             self.predicted_y = sy
@@ -244,12 +246,14 @@ class GameState:
             self.cherries = [
                 CherryData(id=c["id"], x=c["x"], y=c["y"])
                 for c in (data.get("cherries") or [])
+                if c["id"] not in self.collected_items
             ]
 
             # Chests (Pacman only)
             self.chests = [
                 ChestData(id=c["id"], x=c["x"], y=c["y"])
                 for c in (data.get("chests") or [])
+                if c["id"] not in self.collected_items
             ]
 
             # Status
@@ -279,20 +283,36 @@ class GameState:
                 px, py = srv.x, srv.y
                 role = self.status.role
                 dash_ticks = self.status.dash_remaining_ticks
+                dash_dir_x = self.dash_dir_x
+                dash_dir_y = self.dash_dir_y
                 
                 for inp in self.pending_inputs:
+                    if inp.get("dash", False) and role == "GHOST_SPRINTER":
+                        dash_ticks = 9
+                        dx, dy = inp["dir_x"], inp["dir_y"]
+                        length = (dx * dx + dy * dy) ** 0.5
+                        if length > 0:
+                            dash_dir_x = dx / length
+                            dash_dir_y = dy / length
+
                     if self.status.stunned:
                         speed = 0.0
                         dx, dy = inp["dir_x"], inp["dir_y"]
                     elif dash_ticks > 0:
                         speed = 0.350  # SpeedDash
-                        dx, dy = self.dash_dir_x, self.dash_dir_y
+                        dx, dy = dash_dir_x, dash_dir_y
                         dash_ticks -= 1
                     else:
                         speed = SPEEDS_30HZ.get(role, DEFAULT_SPEED_30HZ)
                         dx, dy = inp["dir_x"], inp["dir_y"]
                     px, py = self._predict_step(px, py, dx, dy, speed)
                     
+                # Write back reconciled dash states
+                self.status.dash_remaining_ticks = dash_ticks
+                self.status.is_dashing = (dash_ticks > 0)
+                self.dash_dir_x = dash_dir_x
+                self.dash_dir_y = dash_dir_y
+                
                 # Compare the reconciled position with the current predicted position
                 rdx = px - self.predicted_x
                 rdy = py - self.predicted_y
@@ -345,7 +365,7 @@ class GameState:
                 self.predicted_x, self.predicted_y, dx, dy, speed
             )
 
-            # Local client-side prediction of pellet eating for instant visual feedback
+            # Local client-side prediction of pellet, cherry, and chest eating for instant visual feedback
             if self.status.role == "PACMAN":
                 px, py = self.predicted_x, self.predicted_y
                 RADIUS = 0.35
@@ -357,6 +377,40 @@ class GameState:
                     for tx in range(x_min, x_max + 1):
                         if self.tile_cache.get((tx, ty)) == self.TILE_PELLET:
                             self.tile_cache[(tx, ty)] = self.TILE_EMPTY
+
+                # Cherries
+                remaining_cherries = []
+                for c in self.cherries:
+                    collected = False
+                    for ty in range(y_min, y_max + 1):
+                        for tx in range(x_min, x_max + 1):
+                            if c.x == tx and c.y == ty:
+                                collected = True
+                                break
+                        if collected:
+                            break
+                    if collected:
+                        self.collected_items.add(c.id)
+                    else:
+                        remaining_cherries.append(c)
+                self.cherries = remaining_cherries
+
+                # Chests
+                remaining_chests = []
+                for ch in self.chests:
+                    collected = False
+                    for ty in range(y_min, y_max + 1):
+                        for tx in range(x_min, x_max + 1):
+                            if ch.x == tx and ch.y == ty:
+                                collected = True
+                                break
+                        if collected:
+                            break
+                    if collected:
+                        self.collected_items.add(ch.id)
+                    else:
+                        remaining_chests.append(ch)
+                self.chests = remaining_chests
 
     def _predict_step(self, px: float, py: float, dir_x: float, dir_y: float, speed: float) -> tuple[float, float]:
         new_x = px + dir_x * speed
