@@ -36,7 +36,7 @@ var RoleRegistry = map[string]RoleDefinition{
 	},
 	RoleBuilder: {
 		Role:         RoleBuilder,
-		Group:        "GHOST",
+		Group:        "PACMAN", // Builder is now a Pacman role!
 		VisionRadius: VisionBuilder,
 		Speed:        SpeedBuilder,
 		NewAbility:   func() Ability { return NewBuilderAbility() },
@@ -47,6 +47,20 @@ var RoleRegistry = map[string]RoleDefinition{
 		VisionRadius: VisionSprinter,
 		Speed:        SpeedSprinter,
 		NewAbility:   func() Ability { return NewSprintAbility() },
+	},
+	RoleTrapper: {
+		Role:         RoleTrapper,
+		Group:        "GHOST",
+		VisionRadius: 10.0,
+		Speed:        0.080,
+		NewAbility:   func() Ability { return NewTrapAbility() },
+	},
+	RolePhaser: {
+		Role:         RolePhaser,
+		Group:        "GHOST",
+		VisionRadius: 10.0,
+		Speed:        0.080,
+		NewAbility:   func() Ability { return NewPhaserAbility() },
 	},
 }
 
@@ -94,8 +108,22 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 		p := players[id]
 
 		var def RoleDefinition
+		// We distribute dynamic Pacman roles round-robin or default to PACMAN
+		// To support future Pacman classes, let's separate pacmans vs ghosts
 		if i < pacmanCount {
-			def = RoleRegistry[RolePacman]
+			// Currently Pacmans can be Pacman or Builder.
+			// Let's do a simple alternating or round-robin for Pacmans!
+			// To keep it simple: if Builder is selected, we assign Builder, else Pacman.
+			// Let's collect available Pacman roles and alternate them.
+			var pacmanRoles []string
+			for r, d := range RoleRegistry {
+				if d.Group == "PACMAN" {
+					pacmanRoles = append(pacmanRoles, r)
+				}
+			}
+			// Assign pacman roles round-robin (Pacman first, then Builder etc)
+			role := pacmanRoles[i%len(pacmanRoles)]
+			def = RoleRegistry[role]
 		} else {
 			role := ghostRoles[ghostIdx%len(ghostRoles)]
 			ghostIdx++

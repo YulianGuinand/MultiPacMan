@@ -70,8 +70,7 @@ func (t *TrackerAbility) IsIndicatorActive(now time.Time) bool {
 // Builder ability — Destructible wall placement
 // =============================================================================
 // Places a TileDestructibleWall 2 tiles ahead of the Builder.
-// The wall automatically collapses after 15 seconds.
-// Cooldown: 20 seconds.
+// Cooldown: reduced to 10 seconds.
 
 type BuilderAbility struct {
 	lastUsed time.Time
@@ -79,7 +78,7 @@ type BuilderAbility struct {
 
 func NewBuilderAbility() *BuilderAbility { return &BuilderAbility{} }
 
-func (b *BuilderAbility) GetCooldownMs() int { return 30_000 }
+func (b *BuilderAbility) GetCooldownMs() int { return 10_000 } // Reduced cooldown: 10 seconds
 
 func (b *BuilderAbility) IsReady(now time.Time) bool {
 	return now.After(b.lastUsed.Add(time.Duration(b.GetCooldownMs()) * time.Millisecond))
@@ -148,4 +147,81 @@ func (s *SprintAbility) IsSpacebarTriggered() bool {
 
 func (s *SprintAbility) SetUsed(now time.Time) {
 	s.lastUsed = now
+}
+
+// =============================================================================
+// Trap ability — Fake pellet placement
+// =============================================================================
+// Places a fake pellet at the Trapper's current tile.
+// Cooldown: 12 seconds.
+
+type TrapAbility struct {
+	lastUsed time.Time
+}
+
+func NewTrapAbility() *TrapAbility { return &TrapAbility{} }
+
+func (t *TrapAbility) GetCooldownMs() int { return 12_000 }
+
+func (t *TrapAbility) IsReady(now time.Time) bool {
+	return now.After(t.lastUsed.Add(time.Duration(t.GetCooldownMs()) * time.Millisecond))
+}
+
+func (t *TrapAbility) UseAbility(g *Game, caster *Player) {
+	t.SetUsed(time.Now())
+
+	tx := int(math.Floor(caster.X))
+	ty := int(math.Floor(caster.Y))
+	g.placeFakePellet(tx, ty)
+}
+
+func (t *TrapAbility) OnAssign(caster *Player, now time.Time) {
+	t.lastUsed = now
+	caster.AbilityReady = now.Add(time.Duration(t.GetCooldownMs()) * time.Millisecond)
+}
+
+func (t *TrapAbility) IsSpacebarTriggered() bool {
+	return true
+}
+
+func (t *TrapAbility) SetUsed(now time.Time) {
+	t.lastUsed = now
+}
+
+// =============================================================================
+// Phaser ability — Wall phasing
+// =============================================================================
+// Allows phasing through walls for 20 seconds.
+// Cooldown: 1 minute (60 seconds).
+
+type PhaserAbility struct {
+	lastUsed time.Time
+}
+
+func NewPhaserAbility() *PhaserAbility { return &PhaserAbility{} }
+
+func (p *PhaserAbility) GetCooldownMs() int { return 60_000 }
+
+func (p *PhaserAbility) IsReady(now time.Time) bool {
+	return now.After(p.lastUsed.Add(time.Duration(p.GetCooldownMs()) * time.Millisecond))
+}
+
+func (p *PhaserAbility) UseAbility(g *Game, caster *Player) {
+	p.SetUsed(time.Now())
+
+	caster.IsPhasing = true
+	caster.PhasingRemainingTicks = 20 * TicksPerSec // 20 seconds @ 30Hz = 600 ticks
+}
+
+func (p *PhaserAbility) OnAssign(caster *Player, now time.Time) {
+	p.lastUsed = now
+	caster.AbilityReady = now.Add(time.Duration(p.GetCooldownMs()) * time.Millisecond)
+}
+
+func (p *PhaserAbility) IsSpacebarTriggered() bool {
+	return true
+}
+
+func (p *PhaserAbility) SetUsed(now time.Time) {
+	p.lastUsed = now
 }

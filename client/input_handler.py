@@ -132,13 +132,18 @@ class InputHandler:
                 "dash": dash,
             })
             
-            if dash and snap.get("status") and snap["status"].role == "GHOST_SPRINTER":
-                self.state.status.is_dashing = True
-                self.state.status.dash_remaining_ticks = 9
-                length = (dir_x * dir_x + dir_y * dir_y) ** 0.5
-                if length > 0:
-                    self.state.dash_dir_x = dir_x / length
-                    self.state.dash_dir_y = dir_y / length
+            if dash and snap.get("status"):
+                role = snap["status"].role
+                if role == "GHOST_SPRINTER":
+                    self.state.status.is_dashing = True
+                    self.state.status.dash_remaining_ticks = 9
+                    length = (dir_x * dir_x + dir_y * dir_y) ** 0.5
+                    if length > 0:
+                        self.state.dash_dir_x = dir_x / length
+                        self.state.dash_dir_y = dir_y / length
+                elif role == "GHOST_PHASER":
+                    self.state.status.is_phasing = True
+                    self.state.status.phasing_remaining_ticks = 600
 
         return dir_x, dir_y
 

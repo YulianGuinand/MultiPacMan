@@ -68,8 +68,10 @@ C_LIVES      = 8   # Red — lives heart
 VISION_RADII = {
     "PACMAN": 15.0,
     "GHOST_TRACKER": 9.0,
-    "GHOST_BUILDER": 6.0,
+    "GHOST_BUILDER": 9.0,
     "GHOST_SPRINTER": 12.0,
+    "GHOST_TRAPPER": 10.0,
+    "GHOST_PHASER": 10.0,
 }
 
 
@@ -209,9 +211,9 @@ class Renderer:
             self._draw_self(display_x, display_y, role, status.stunned, status.is_invisible)
             # Draw directional indicators around self
             sx, sy = self._world_to_screen(display_x, display_y)
-            if role == "PACMAN":
+            if role in ("PACMAN", "GHOST_BUILDER"):
                 self._draw_direction_indicator(sx, sy, status.cherry_dir_angle, C_INDICATOR)
-            elif role == "GHOST_TRACKER":
+            else:
                 self._draw_direction_indicator(sx, sy, status.tracker_dir_angle, C_TRACKER_IND)
 
         # Draw builder preview if playing, alive, and GHOST_BUILDER
@@ -471,7 +473,7 @@ class Renderer:
             if not (-8 <= sx < SCREEN_W + 8 and -8 <= sy < GAME_H + 8):
                 continue
             revealed = player.revealed_role
-            if revealed == "PACMAN":
+            if revealed in ("PACMAN", "GHOST_BUILDER"):
                 col = C_PAC_REV
             elif revealed and "GHOST" in revealed:
                 col = C_GHOST_REV
@@ -502,7 +504,7 @@ class Renderer:
         elif stunned:
             # Flash red/white during stun.
             col = C_STUN if (pyxel.frame_count // 4) % 2 == 0 else 7
-        elif role == "PACMAN":
+        elif role in ("PACMAN", "GHOST_BUILDER"):
             col = C_SELF_PAC
         else:
             col = C_SELF
@@ -514,10 +516,12 @@ class Renderer:
 
         # Role label above the sprite.
         label = {
-            "PACMAN":        "PAC",
+            "PACMAN":         "PAC",
             "GHOST_TRACKER":  "TRK",
             "GHOST_BUILDER":  "BLD",
             "GHOST_SPRINTER": "SPR",
+            "GHOST_TRAPPER":  "TRP",
+            "GHOST_PHASER":   "PHS",
         }.get(role, "?")
         lx = sx - len(label) * 2
         pyxel.text(lx, sy - 10, label, col)
@@ -555,8 +559,8 @@ class Renderer:
         # Row 1: Score + Lives + Role
         pyxel.text(5, hy + 3, f"SCORE {status.score:06d}", C_HUD_TEXT)
 
-        # Lives (hearts) — Pacman only
-        if status.role == "PACMAN":
+        # Lives (hearts) — Pacman roles
+        if status.role in ("PACMAN", "GHOST_BUILDER"):
             lives_x = 90
             for i in range(status.lives):
                 hx = lives_x + i * 7
@@ -581,8 +585,10 @@ class Renderer:
             "GHOST_TRACKER":  "TRACKER",
             "GHOST_BUILDER":  "BUILDER",
             "GHOST_SPRINTER": "SPRINTER",
+            "GHOST_TRAPPER":  "TRAPPER",
+            "GHOST_PHASER":   "PHASER",
         }.get(status.role, status.role or "?")
-        pyxel.text(5, hy + 12, role_label, C_SELF_PAC if status.role == "PACMAN" else C_SELF)
+        pyxel.text(5, hy + 12, role_label, C_SELF_PAC if status.role in ("PACMAN", "GHOST_BUILDER") else C_SELF)
 
         # Stun indicator (centred)
         if status.stunned:
@@ -615,8 +621,10 @@ class Renderer:
             # Estimate max cooldown from role.
             max_cd = {
                 "GHOST_TRACKER":  60_000,
-                "GHOST_BUILDER":  30_000,
+                "GHOST_BUILDER":  10_000,
                 "GHOST_SPRINTER":  8_000,
+                "GHOST_TRAPPER":  12_000,
+                "GHOST_PHASER":   60_000,
             }.get(status.role, 10_000)
             filled = int(bar_w * (1.0 - status.cooldown_ms / max_cd))
             filled = max(0, min(bar_w, filled))

@@ -21,6 +21,8 @@ SPEEDS_30HZ = {
     "GHOST_TRACKER": 0.080,
     "GHOST_BUILDER": 0.078,
     "GHOST_SPRINTER": 0.096,
+    "GHOST_TRAPPER": 0.080,
+    "GHOST_PHASER": 0.080,
 }
 DEFAULT_SPEED_30HZ = 0.080
 
@@ -76,6 +78,8 @@ class GameStatus:
     spectating_id: str = ""
     is_dashing: bool = False
     dash_remaining_ticks: int = 0
+    is_phasing: bool = False
+    phasing_remaining_ticks: int = 0
 
 
 @dataclass
@@ -272,28 +276,38 @@ class GameState:
             self.status.spectating_id = s.get("spectating_id", "")
             self.status.is_dashing = s.get("is_dashing", False)
             self.status.dash_remaining_ticks = s.get("dash_remaining_ticks", 0)
+            self.status.is_phasing = s.get("is_phasing", False)
+            self.status.phasing_remaining_ticks = s.get("phasing_remaining_ticks", 0)
 
             if self.local_id and self.local_id in self.players:
                 srv = self.players[self.local_id]
                 
                 # Filter out inputs already processed by the server
                 self.pending_inputs = [inp for inp in self.pending_inputs if inp["seq"] > self.last_seq]
-                # Replay remaining pending inputs starting from authoritative server position
+                 # Replay remaining pending inputs starting from authoritative server position
                 px, py = srv.x, srv.y
                 role = self.status.role
                 dash_ticks = self.status.dash_remaining_ticks
                 dash_dir_x = self.dash_dir_x
                 dash_dir_y = self.dash_dir_y
                 is_stunned = self.status.stunned
+                phasing_ticks = self.status.phasing_remaining_ticks
                 
                 for inp in self.pending_inputs:
-                    if inp.get("dash", False) and role == "GHOST_SPRINTER":
-                        dash_ticks = 9
-                        dx, dy = inp["dir_x"], inp["dir_y"]
-                        length = (dx * dx + dy * dy) ** 0.5
-                        if length > 0:
-                            dash_dir_x = dx / length
-                            dash_dir_y = dy / length
+                    if inp.get("dash", False):
+                        if role == "GHOST_SPRINTER":
+                            dash_ticks = 9
+                            dx, dy = inp["dir_x"], inp["dir_y"]
+                            length = (dx * dx + dy * dy) ** 0.5
+                            if length > 0:
+                                dash_dir_x = dx / length
+                                dash_dir_y = dy / length
+                        elif role == "GHOST_PHASER":
+                            phasing_ticks = 600
+
+                    is_phasing_active = (phasing_ticks > 0)
+                    if phasing_ticks > 0:
+                        phasing_ticks -= 1
 
                     if is_stunned:
                         speed = 0.0
@@ -314,11 +328,13 @@ class GameState:
                     else:
                         speed = SPEEDS_30HZ.get(role, DEFAULT_SPEED_30HZ)
                         dx, dy = inp["dir_x"], inp["dir_y"]
-                    px, py = self._predict_step(px, py, dx, dy, speed)
+                    px, py = self._predict_step(px, py, dx, dy, speed, is_phasing_active)
                     
                 # Write back reconciled dash states
                 self.status.dash_remaining_ticks = dash_ticks
                 self.status.is_dashing = (dash_ticks > 0)
+                self.status.is_phasing = (phasing_ticks > 0)
+                self.status.phasing_remaining_ticks = phasing_ticks
                 self.status.stunned = is_stunned
                 self.dash_dir_x = dash_dir_x
                 self.dash_dir_y = dash_dir_y
@@ -363,6 +379,11 @@ class GameState:
             self.prev_predicted_y = self.predicted_y
             self.local_interp_t = 0.0
 
+            is_phasing_active = self.status.phasing_remaining_ticks > 0
+            if self.status.phasing_remaining_ticks > 0:
+                self.status.phasing_remaining_ticks -= 1
+                self.status.is_phasing = (self.status.phasing_remaining_ticks > 0)
+
             if self.status.dash_remaining_ticks > 0:
                 dx = self.dash_dir_x
                 dy = self.dash_dir_y
@@ -388,11 +409,11 @@ class GameState:
                 if is_dash_step:
                     self.status.dash_remaining_ticks -= 1
                 self.predicted_x, self.predicted_y = self._predict_step(
-                    self.predicted_x, self.predicted_y, dx, dy, speed
+                    self.predicted_x, self.predicted_y, dx, dy, speed, is_phasing_active
                 )
 
             # Local client-side prediction of pellet, cherry, and chest eating for instant visual feedback
-            if self.status.role == "PACMAN":
+            if self.status.role in ("PACMAN", "GHOST_BUILDER"):
                 px, py = self.predicted_x, self.predicted_y
                 RADIUS = 0.35
                 x_min = int(px - RADIUS)
@@ -438,19 +459,23 @@ class GameState:
                         remaining_chests.append(ch)
                 self.chests = remaining_chests
 
-    def _predict_step(self, px: float, py: float, dir_x: float, dir_y: float, speed: float) -> tuple[float, float]:
+    def _predict_step(self, px: float, py: float, dir_x: float, dir_y: float, speed: float, is_phasing: bool = False) -> tuple[float, float]:
         new_x = px + dir_x * speed
         new_y = py + dir_y * speed
 
-        # Slide collision logic
-        if not self._would_collide(new_x, new_y):
+        if is_phasing:
             px = new_x
             py = new_y
         else:
-            if not self._would_collide(new_x, py):
+            # Slide collision logic
+            if not self._would_collide(new_x, new_y):
                 px = new_x
-            elif not self._would_collide(px, new_y):
                 py = new_y
+            else:
+                if not self._would_collide(new_x, py):
+                    px = new_x
+                elif not self._would_collide(px, new_y):
+                    py = new_y
 
         if self.map_width > 0:
             px = max(0.4, min(self.map_width - 1.4, px))
@@ -509,6 +534,8 @@ class GameState:
                     spectating_id=self.status.spectating_id,
                     is_dashing=self.status.is_dashing,
                     dash_remaining_ticks=self.status.dash_remaining_ticks,
+                    is_phasing=self.status.is_phasing,
+                    phasing_remaining_ticks=self.status.phasing_remaining_ticks,
                 ),
                 "map_width": self.map_width,
                 "map_height": self.map_height,

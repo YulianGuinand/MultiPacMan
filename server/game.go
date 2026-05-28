@@ -46,6 +46,10 @@ type Player struct {
 	DashRemainingTicks int
 	DashDirX, DashDirY float64
 
+	// Phaser state
+	IsPhasing             bool
+	PhasingRemainingTicks int
+
 	// Lives (Pacman — granted by cherries)
 	Lives int
 
@@ -67,7 +71,7 @@ type Player struct {
 }
 
 func (p *Player) IsGhost() bool {
-	return p.Role == RoleTracker || p.Role == RoleBuilder || p.Role == RoleSprinter
+	return RoleRegistry[p.Role].Group == "GHOST"
 }
 
 // =============================================================================
@@ -90,8 +94,9 @@ type Game struct {
 	mapHeight int
 
 	// Pellet tracking
-	totalPellets     int
-	remainingPellets int
+	totalPellets       int
+	remainingPellets    int
+	trapIndicatorUntil time.Time
 
 	// Dynamically spawned items
 	cherries       []SpawnedItem
@@ -485,10 +490,30 @@ func (g *Game) processTick() {
 			}
 		}
 
+		// Phaser overrides collision.
+		if p.IsPhasing {
+			if p.PhasingRemainingTicks <= 0 {
+				p.IsPhasing = false
+				// Check if inside wall
+				tx := int(math.Floor(p.X))
+				ty := int(math.Floor(p.Y))
+				if tx >= 0 && tx < g.mapWidth && ty >= 0 && ty < g.mapHeight {
+					if g.grid[ty][tx] == TileWall || g.grid[ty][tx] == TileDestructibleWall {
+						p.IsDead = true
+						p.SpectatingID = g.findFirstAliveTeammateLocked(p)
+						log.Printf("[game %s] phaser %s died inside a wall!", g.ID, p.ID)
+						continue
+					}
+				}
+			} else {
+				p.PhasingRemainingTicks--
+			}
+		}
+
 		newX := p.X + dirX*speed
 		newY := p.Y + dirY*speed
 
-		if !g.wouldCollide(newX, newY) {
+		if p.IsPhasing || !g.wouldCollide(newX, newY) {
 			p.X = newX
 			p.Y = newY
 		} else {
@@ -529,7 +554,7 @@ func (g *Game) processTick() {
 
 	// --- 4. Pellet collection (Pacmans only) ---
 	for _, p := range g.players {
-		if p.Role != RolePacman || p.IsDead || p.IsStunned {
+		if RoleRegistry[p.Role].Group != "PACMAN" || p.IsDead || p.IsStunned {
 			continue
 		}
 		xMin := int(math.Floor(p.X - PlayerRadius))
@@ -544,6 +569,10 @@ func (g *Game) processTick() {
 						g.grid[ty][tx] = TileEmpty
 						p.Score += 10
 						g.remainingPellets--
+					} else if g.grid[ty][tx] == TileFakePellet {
+						g.grid[ty][tx] = TileEmpty
+						g.trapIndicatorUntil = now.Add(3 * time.Second)
+						log.Printf("[game %s] %s triggered a trap! Indicator active.", g.ID, p.ID)
 					}
 				}
 			}
@@ -561,7 +590,7 @@ func (g *Game) processTick() {
 
 	// --- 6. Cherry collection (Pacmans only) ---
 	for _, p := range g.players {
-		if p.Role != RolePacman || p.IsDead || p.IsStunned {
+		if RoleRegistry[p.Role].Group != "PACMAN" || p.IsDead || p.IsStunned {
 			continue
 		}
 		xMin := int(math.Floor(p.X - PlayerRadius))
@@ -602,7 +631,7 @@ func (g *Game) processTick() {
 
 	// --- 8. Chest collection (Pacmans only) ---
 	for _, p := range g.players {
-		if p.Role != RolePacman || p.IsDead || p.IsStunned {
+		if RoleRegistry[p.Role].Group != "PACMAN" || p.IsDead || p.IsStunned {
 			continue
 		}
 		xMin := int(math.Floor(p.X - PlayerRadius))
@@ -642,7 +671,7 @@ func (g *Game) processTick() {
 			continue
 		}
 		for _, pacman := range g.players {
-			if pacman.Role != RolePacman || pacman.IsDead || pacman.IsStunned {
+			if RoleRegistry[pacman.Role].Group != "PACMAN" || pacman.IsDead || pacman.IsStunned {
 				continue
 			}
 			if dist2D(ghost.X, ghost.Y, pacman.X, pacman.Y) < PlayerRadius*2 {
@@ -706,7 +735,7 @@ func (g *Game) processTick() {
 
 	// Pacmans win if any Pacman reaches 3000 points.
 	for _, p := range g.players {
-		if p.Role == RolePacman && p.Score >= 3000 {
+		if RoleRegistry[p.Role].Group == "PACMAN" && p.Score >= 3000 {
 			g.endGameLocked("PACMAN")
 			g.mu.Unlock()
 			return
@@ -716,7 +745,7 @@ func (g *Game) processTick() {
 	// Ghosts win if all Pacmans are dead.
 	pacmanAlive := false
 	for _, p := range g.players {
-		if p.Role == RolePacman && !p.IsDead {
+		if RoleRegistry[p.Role].Group == "PACMAN" && !p.IsDead {
 			pacmanAlive = true
 			break
 		}
@@ -768,6 +797,15 @@ func (g *Game) spawnChestLocked() {
 	log.Printf("[game %s] chest spawned at (%d, %d)", g.ID, pt[0], pt[1])
 }
 
+func (g *Game) placeFakePellet(x, y int) {
+	if x >= 0 && x < g.mapWidth && y >= 0 && y < g.mapHeight {
+		if g.grid[y][x] == TileEmpty {
+			g.grid[y][x] = TileFakePellet
+			log.Printf("[game %s] fake pellet placed at (%d, %d)", g.ID, x, y)
+		}
+	}
+}
+
 // findRandomFloorTileLocked returns a random walkable (empty or pellet) tile.
 func (g *Game) findRandomFloorTileLocked() [2]int {
 	// Collect walkable tiles.
@@ -815,7 +853,7 @@ func (g *Game) findFirstAliveTeammateLocked(p *Player) string {
 		if isGhost && other.IsGhost() {
 			return other.ID
 		}
-		if !isGhost && other.Role == RolePacman {
+		if !isGhost && !other.IsGhost() {
 			return other.ID
 		}
 	}
@@ -834,7 +872,7 @@ func (g *Game) findNextAliveTeammateLocked(p *Player) string {
 		if isGhost && other.IsGhost() {
 			teammates = append(teammates, other)
 		}
-		if !isGhost && other.Role == RolePacman {
+		if !isGhost && !other.IsGhost() {
 			teammates = append(teammates, other)
 		}
 	}
@@ -942,6 +980,9 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 	var visibleCherries []EntityState
 	var visibleChests []EntityState
 
+	isPacman := RoleRegistry[p.Role].Group == "PACMAN"
+	isSpectatedPacman := false
+
 	// Determine the viewpoint: if dead and spectating, use spectated player's position.
 	viewX, viewY := p.X, p.Y
 	viewRadius := p.VisionRadius
@@ -951,6 +992,7 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 			viewX, viewY = sp.X, sp.Y
 			viewRadius = sp.VisionRadius
 			spectatedPlayer = sp
+			isSpectatedPacman = RoleRegistry[spectatedPlayer.Role].Group == "PACMAN"
 		}
 	}
 
@@ -991,13 +1033,22 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 				continue
 			}
 			tileType := g.grid[ty][tx]
-			// Anti-cheat: ghosts see pellet tiles as empty.
-			if tileType == TilePellet && p.Role != RolePacman {
-				tileType = TileEmpty
-			}
-			// Anti-cheat: ghosts cannot see cherry/chest tiles.
-			if (tileType == TileCherry || tileType == TileChest) && p.Role != RolePacman {
-				tileType = TileEmpty
+			// Anti-cheat: Pacmans see TileFakePellet as TilePellet (2). Ghosts see TileFakePellet as TileEmpty (0).
+			if tileType == TileFakePellet {
+				if isPacman {
+					tileType = TilePellet
+				} else {
+					tileType = TileEmpty
+				}
+			} else {
+				// Anti-cheat: ghosts see pellet tiles as empty.
+				if tileType == TilePellet && !isPacman {
+					tileType = TileEmpty
+				}
+				// Anti-cheat: ghosts cannot see cherry/chest tiles.
+				if (tileType == TileCherry || tileType == TileChest) && !isPacman {
+					tileType = TileEmpty
+				}
 			}
 
 			key := ty*g.mapWidth + tx
@@ -1020,7 +1071,7 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 	}
 
 	// --- Cherries (Pacman only) ---
-	if p.Role == RolePacman || (p.IsDead && spectatedPlayer.Role == RolePacman) {
+	if isPacman || (p.IsDead && isSpectatedPacman) {
 		for _, c := range g.cherries {
 			cx, cy := float64(c.X)+0.5, float64(c.Y)+0.5
 			if dist2D(viewX, viewY, cx, cy) <= viewRadius {
@@ -1032,7 +1083,7 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 	}
 
 	// --- Chests (Pacman only) ---
-	if p.Role == RolePacman || (p.IsDead && spectatedPlayer.Role == RolePacman) {
+	if isPacman || (p.IsDead && isSpectatedPacman) {
 		for _, ch := range g.chests {
 			cx, cy := float64(ch.X)+0.5, float64(ch.Y)+0.5
 			if dist2D(viewX, viewY, cx, cy) <= viewRadius {
@@ -1045,7 +1096,7 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 
 	// --- Cherry directional indicator (Pacman only) ---
 	cherryAngle := -999.0
-	if p.Role == RolePacman && !p.IsDead && len(g.cherries) > 0 {
+	if isPacman && !p.IsDead && len(g.cherries) > 0 {
 		bestDist := math.MaxFloat64
 		for _, c := range g.cherries {
 			cx, cy := float64(c.X)+0.5, float64(c.Y)+0.5
@@ -1057,21 +1108,27 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 		}
 	}
 
-	// --- Tracker directional indicator ---
+	// --- Tracker / Trapper directional indicator ---
 	trackerAngle := -999.0
-	if p.Role == RoleTracker && !p.IsDead && p.Ability != nil {
-		if ta, ok := p.Ability.(*TrackerAbility); ok && ta.IsIndicatorActive(now) {
-			bestDist := math.MaxFloat64
-			for _, other := range g.players {
-				if other.Role != RolePacman || other.IsDead {
-					continue
-				}
-				// Tracker indicator IGNORES invisibility
-				d := dist2D(p.X, p.Y, other.X, other.Y)
-				if d < bestDist {
-					bestDist = d
-					trackerAngle = math.Atan2(other.Y-p.Y, other.X-p.X)
-				}
+	isTrapActive := now.Before(g.trapIndicatorUntil)
+	isTrackerActive := false
+	if p.Role == RoleTracker && p.Ability != nil {
+		if ta, ok := p.Ability.(*TrackerAbility); ok {
+			isTrackerActive = ta.IsIndicatorActive(now)
+		}
+	}
+
+	if !p.IsDead && ((p.IsGhost() && isTrapActive) || isTrackerActive) {
+		bestDist := math.MaxFloat64
+		for _, other := range g.players {
+			if RoleRegistry[other.Role].Group != "PACMAN" || other.IsDead {
+				continue
+			}
+			// Indicator IGNORES invisibility
+			d := dist2D(p.X, p.Y, other.X, other.Y)
+			if d < bestDist {
+				bestDist = d
+				trackerAngle = math.Atan2(other.Y-p.Y, other.X-p.X)
 			}
 		}
 	}
@@ -1105,6 +1162,8 @@ func (g *Game) buildStateForLocked(p *Player, now time.Time) GameStatePayload {
 			SpectatingID:    p.SpectatingID,
 			IsDashing:       p.IsDashing,
 			DashRemainingTicks: p.DashRemainingTicks,
+			IsPhasing:       p.IsPhasing,
+			PhasingRemainingTicks: p.PhasingRemainingTicks,
 		},
 		LastSeq: p.LastSeq,
 	}

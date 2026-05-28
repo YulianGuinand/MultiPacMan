@@ -11,6 +11,7 @@ const (
 	TileDestructibleWall = 3
 	TileCherry           = 4
 	TileChest            = 5
+	TileFakePellet       = 6
 )
 
 // =============================================================================
@@ -22,6 +23,8 @@ const (
 	RoleTracker  = "GHOST_TRACKER"
 	RoleBuilder  = "GHOST_BUILDER"
 	RoleSprinter = "GHOST_SPRINTER"
+	RoleTrapper  = "GHOST_TRAPPER"
+	RolePhaser   = "GHOST_PHASER"
 )
 
 // =============================================================================
@@ -77,7 +80,7 @@ const (
 const (
 	VisionPacman   = 15.0
 	VisionTracker  = 9.0
-	VisionBuilder  = 6.0
+	VisionBuilder  = 9.0
 	VisionSprinter = 12.0
 )
 
@@ -205,7 +208,9 @@ type PlayerStatus struct {
 	TrackerDirAngle float64 `json:"tracker_dir_angle"` // radians, -999 = not active
 	SpectatingID    string  `json:"spectating_id,omitempty"`
 	IsDashing       bool    `json:"is_dashing"`
-	DashRemainingTicks int `json:"dash_remaining_ticks"`
+	DashRemainingTicks int  `json:"dash_remaining_ticks"`
+	IsPhasing       bool    `json:"is_phasing"`
+	PhasingRemainingTicks int `json:"phasing_remaining_ticks"`
 }
 
 // GameStatePayload is the per-tick world snapshot sent to each player (30 Hz).
