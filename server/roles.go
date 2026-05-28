@@ -1,6 +1,9 @@
 package main
 
 import (
+	cryptorand "crypto/rand"
+	"encoding/binary"
+	"log"
 	"math"
 	"math/rand"
 	"time"
@@ -19,8 +22,18 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 	n := len(players)
 	pacmanCount := maxI(1, n/4)
 
+	// Seed PRNG using crypto/rand to guarantee true randomness
+	var seed int64
+	var b [8]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		log.Printf("[RoleAssign] Warning: failed to read crypto/rand, falling back to time-based seed: %v", err)
+		seed = time.Now().UnixNano()
+	} else {
+		seed = int64(binary.BigEndian.Uint64(b[:]))
+	}
+	rng := rand.New(rand.NewSource(seed))
+
 	// Collect and shuffle IDs to randomise who gets which role.
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	ids := make([]string, 0, n)
 	for id := range players {
 		ids = append(ids, id)
@@ -29,6 +42,7 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 
 	// Ghost subclass rotation.
 	ghostRoles := []string{RoleTracker, RoleBuilder, RoleSprinter}
+	rng.Shuffle(len(ghostRoles), func(i, j int) { ghostRoles[i], ghostRoles[j] = ghostRoles[j], ghostRoles[i] })
 	ghostIdx := 0
 
 	// Find well-distributed spawn positions.
@@ -81,6 +95,8 @@ func AssignRoles(players map[string]*Player, grid [][]int, mapWidth, mapHeight i
 			p.X = float64(mapWidth/2) + float64(i)*2
 			p.Y = float64(mapHeight / 2)
 		}
+
+		log.Printf("[RoleAssign] Assigned role %s to player %s at spawn point (%.1f, %.1f)", p.Role, id, p.X, p.Y)
 	}
 }
 

@@ -204,7 +204,10 @@ class GameState:
             # Tiles (apply deltas — server sends only changed tiles)
             # Process tiles before discarding packets to ensure reliable map updates are always registered
             for t in (data.get("tiles") or []):
-                self.tile_cache[(t["x"], t["y"])] = t["t"]
+                tx, ty, new_t = t["x"], t["y"], t["t"]
+                if new_t == self.TILE_PELLET and self.tile_cache.get((tx, ty)) == self.TILE_EMPTY:
+                    continue
+                self.tile_cache[(tx, ty)] = new_t
 
             tick = data.get("tick", 0)
             if tick <= self.last_tick:
